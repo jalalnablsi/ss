@@ -1,5 +1,5 @@
 // app/api/ads/reward/route.ts
-export const runtime = 'edge';
+
 import { NextResponse } from 'next/server';
 import { queryD1, executeD1 } from '@/lib/db';
 
