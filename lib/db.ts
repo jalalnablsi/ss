@@ -2,14 +2,18 @@
 import { getRequestContext } from '@cloudflare/next-on-pages';
 
 // دالة مساعدة للحصول على قاعدة البيانات (Binding)
+// lib/db.ts
+
 async function getDBBinding() {
   try {
     const context = getRequestContext();
-    return context?.env?.DB || (process.env as any).DB;
+    // استخدام (context?.env as any)?.DB لتجنب خطأ الـ TypeScript
+    return (context?.env as any)?.DB || (process.env as any).DB;
   } catch (e) {
-    return null;
+    return (process.env as any).DB;
   }
 }
+
 
 // 1. دالة جلب البيانات (SELECT)
 export async function queryD1(sql: string, params: any[] = []) {
