@@ -1,105 +1,146 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useGame } from './GameProvider';
-import { Users, Copy, CheckCircle2, Gift } from 'lucide-react';
+import { Users, Copy, Check, Trophy, Lock } from 'lucide-react';
 import { motion } from 'motion/react';
 
 export function FriendsScreen() {
-  const { referralsCount, referralsActivated, referralCoinsEarned, claimReferralReward } = useGame();
+  const { coins } = useGame();
+  const [refData, setRefData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
 
-  const tgUserStr = typeof window !== 'undefined' ? window.Telegram?.WebApp?.initDataUnsafe?.user : null;
-  const currentUserId = tgUserStr?.id?.toString() || '123456';
-  const inviteLink = `https://t.me/TapToEarnBot?start=ref${currentUserId}`;
+  useEffect(() => {
+    const fetchReferrals = async () => {
+      const initData = window.Telegram?.WebApp?.initData;
+      if (!initData) return;
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(inviteLink);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+      try {
+        const res = await fetch(`/api/referrals?initData=${encodeURIComponent(initData)}`);
+        if (res.ok) {
+          const data = await res.json();
+          setRefData(data);
+        }
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchReferrals();
+  }, []);
+
+  const getInviteLink = () => {
+    const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id;
+    if (!userId) return '';
+    // استبدل 'Tap_hustle_bot' باسم بوتك الحقيقي
+    return `https://t.me/Tap_hustle_bot?start=${userId}`;
   };
 
-  // Calculate unrewarded referrals (for demo purposes)
-  // Rewards are now added automatically by the backend
-  // const unrewarded = referralsActivated - (referralCoinsEarned / 1500);
+  const copyLink = () => {
+    const link = getInviteLink();
+    navigator.clipboard.writeText(link);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+    
+    // إشعار تيليجرام المدمج
+    window.Telegram?.WebApp?.showPopup({
+      title: 'Invitation Link',
+      message: 'Link copied to clipboard!',
+      buttons: [{ type: 'ok' }]
+    });
+  };
+
+  if (loading) {
+    return <div className="flex items-center justify-center h-full text-white">Loading...</div>;
+  }
 
   return (
-    <div className="w-full h-full pb-28 pt-8 px-5 overflow-y-auto">
-      <div className="text-center mb-8">
-        <div className="inline-flex items-center justify-center w-20 h-20 rounded-3xl bg-gradient-to-br from-indigo-500/20 to-purple-500/20 border border-indigo-500/30 text-indigo-400 mb-5 shadow-[0_0_30px_rgba(99,102,241,0.15)]">
-          <Users size={40} />
+    <div className="h-full w-full overflow-y-auto pt-4 pb-28 px-4 text-white">
+      <h1 className="text-2xl font-bold mb-6 text-center">Invite Friends</h1>
+
+      {/* Invite Card */}
+      <div className="bg-gradient-to-br from-blue-600 to-indigo-700 rounded-2xl p-6 mb-6 shadow-lg relative overflow-hidden">
+        <div className="relative z-10">
+          <h2 className="text-xl font-bold mb-2">Get 1,500 Coins per Friend!</h2>
+          <p className="text-blue-100 text-sm mb-4">Invite friends and earn when they reach 500 taps.</p>
+          
+          <button 
+            onClick={copyLink}
+            className="w-full bg-white text-blue-600 font-bold py-3 rounded-xl flex items-center justify-center gap-2 active:scale-95 transition-transform"
+          >
+            {copied ? <Check size={20} /> : <Copy size={20} />}
+            {copied ? 'Copied!' : 'Copy Invite Link'}
+          </button>
         </div>
-        <h2 className="text-4xl font-black text-white mb-3 tracking-tight">Frens</h2>
-        <p className="text-zinc-400 text-sm">Invite friends and earn 1,500 coins for each active friend!</p>
+        {/* Decorative Circles */}
+        <div className="absolute -top-10 -right-10 w-32 h-32 bg-white/10 rounded-full blur-2xl" />
+        <div className="absolute -bottom-10 -left-10 w-32 h-32 bg-black/10 rounded-full blur-2xl" />
       </div>
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-2 gap-4 mb-4">
-        <div className="bg-white/5 border border-white/10 rounded-2xl p-4 text-center">
-          <div className="text-zinc-400 text-xs font-bold uppercase tracking-wider mb-1">Total Frens</div>
-          <div className="text-2xl font-black text-white">{referralsCount}</div>
+      {refData && (
+        <div className="grid grid-cols-2 gap-4 mb-6">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-center">
+            <div className="text-zinc-400 text-xs mb-1">Total Friends</div>
+            <div className="text-2xl font-bold text-white">{refData.myStats.totalReferrals}</div>
+          </div>
+          <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-center">
+            <div className="text-zinc-400 text-xs mb-1">Earned Coins</div>
+            <div className="text-2xl font-bold text-yellow-400">{refData.myStats.earnedCoins}</div>
+          </div>
         </div>
-        <div className="bg-white/5 border border-white/10 rounded-2xl p-4 text-center">
-          <div className="text-zinc-400 text-xs font-bold uppercase tracking-wider mb-1">Active Frens</div>
-          <div className="text-2xl font-black text-green-400">{referralsActivated}</div>
-        </div>
-      </div>
-      
-      <div className="bg-white/5 border border-white/10 rounded-2xl p-4 text-center mb-8">
-        <div className="text-zinc-400 text-xs font-bold uppercase tracking-wider mb-1">Coins Earned</div>
-        <div className="text-2xl font-black text-yellow-400">{referralCoinsEarned.toLocaleString()}</div>
-      </div>
+      )}
 
-      {/* Rules Box */}
-      <div className="bg-gradient-to-br from-indigo-500/10 to-purple-500/10 border border-indigo-500/20 rounded-3xl p-5 mb-8">
-        <h3 className="text-white font-bold mb-3 flex items-center gap-2">
-          <Gift size={18} className="text-indigo-400" /> 
-          How it works
-        </h3>
-        <ul className="space-y-3 text-sm text-zinc-300">
-          <li className="flex items-start gap-2">
-            <span className="text-indigo-400 font-bold">1.</span>
-            Share your invite link with your friends.
-          </li>
-          <li className="flex items-start gap-2">
-            <span className="text-indigo-400 font-bold">2.</span>
-            Friend joins and starts tapping.
-          </li>
-          <li className="flex items-start gap-2">
-            <span className="text-indigo-400 font-bold">3.</span>
-            Once your friend reaches <strong className="text-white">500 taps</strong>, they become "Active".
-          </li>
-          <li className="flex items-start gap-2">
-            <span className="text-indigo-400 font-bold">4.</span>
-            You automatically earn <strong className="text-yellow-400">1,500 Coins</strong>!
-          </li>
-        </ul>
+      {/* Referrals List */}
+      <div className="space-y-3">
+        <h3 className="text-lg font-bold text-zinc-400">Your Friends</h3>
+        
+        {(!refData || refData.referrals.length === 0) ? (
+          <div className="text-center py-10 text-zinc-500 bg-zinc-900/50 rounded-xl border border-zinc-800 border-dashed">
+            <Users size={48} className="mx-auto mb-3 opacity-50" />
+            <p>No friends invited yet.</p>
+            <p className="text-sm mt-1">Be the first to invite!</p>
+          </div>
+        ) : (
+          refData.referrals.map((friend: any) => (
+            <motion.div 
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              key={friend.id} 
+              className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex items-center justify-between"
+            >
+              <div className="flex items-center gap-3">
+                <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold ${friend.rewardClaimed ? 'bg-yellow-500/20 text-yellow-500' : 'bg-zinc-800 text-zinc-400'}`}>
+                  {friend.name.charAt(0).toUpperCase()}
+                </div>
+                <div>
+                  <div className="font-bold text-white">{friend.name}</div>
+                  <div className="text-xs text-zinc-500">
+                    {friend.taps} taps • {friend.coins} coins
+                  </div>
+                </div>
+              </div>
+              
+              <div>
+                {friend.rewardClaimed ? (
+                  <div className="flex items-center gap-1 text-yellow-500 text-xs font-bold bg-yellow-500/10 px-2 py-1 rounded-lg">
+                    <Trophy size={12} />
+                    <span>+1500</span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1 text-zinc-600 text-xs font-bold bg-zinc-800 px-2 py-1 rounded-lg">
+                    <Lock size={12} />
+                    <span>{500 - friend.taps > 0 ? `${500 - friend.taps} left` : 'Pending'}</span>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          ))
+        )}
       </div>
-
-      {/* Invite Link */}
-      <div className="bg-white/5 border border-white/10 rounded-2xl p-4 flex items-center gap-3">
-        <div className="flex-1 overflow-hidden">
-          <div className="text-xs text-zinc-500 font-bold uppercase tracking-wider mb-1">Your Invite Link</div>
-          <div className="text-white text-sm truncate">{inviteLink}</div>
-        </div>
-        <button 
-          onClick={handleCopy}
-          className="w-12 h-12 rounded-xl bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors shrink-0"
-        >
-          {copied ? <CheckCircle2 size={20} className="text-green-400" /> : <Copy size={20} className="text-white" />}
-        </button>
-      </div>
-
-      <button 
-        onClick={() => {
-          // In Telegram Mini App, use Telegram WebApp API to open share dialog
-          // window.Telegram.WebApp.openTelegramLink(`https://t.me/share/url?url=${inviteLink}&text=Join me and earn coins!`);
-          handleCopy();
-        }}
-        className="w-full mt-4 py-4 rounded-2xl font-bold bg-white text-black hover:bg-zinc-200 active:scale-[0.98] transition-all"
-      >
-        Invite a Friend
-      </button>
     </div>
   );
 }
