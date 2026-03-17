@@ -13,7 +13,7 @@ export function FriendsScreen() {
 
   useEffect(() => {
     const fetchReferrals = async () => {
-      const initData = window.Telegram?.WebApp?.initData;
+      const initData = (window as any).Telegram?.WebApp?.initData;
       if (!initData) return;
 
       try {
@@ -33,24 +33,29 @@ export function FriendsScreen() {
   }, []);
 
   const getInviteLink = () => {
-    const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id;
+    const userId = (window as any).Telegram?.WebApp?.initDataUnsafe?.user?.id;
     if (!userId) return '';
-    // استبدل 'Tap_hustle_bot' باسم بوتك الحقيقي
+    // تم تحديث الرابط ليتوافق مع اسم البوت الخاص بك
     return `https://t.me/Tap_hustle_bot?start=${userId}`;
   };
 
   const copyLink = () => {
     const link = getInviteLink();
+    if (!link) return;
+    
     navigator.clipboard.writeText(link);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
     
-    // إشعار تيليجرام المدمج
-    window.Telegram?.WebApp?.showPopup({
-      title: 'Invitation Link',
-      message: 'Link copied to clipboard!',
-      buttons: [{ type: 'ok' }]
-    });
+    // --- التعديل هنا لحل خطأ الـ Build ---
+    const webApp = (window as any).Telegram?.WebApp;
+    if (webApp && typeof webApp.showPopup === 'function') {
+      webApp.showPopup({
+        title: 'Invitation Link',
+        message: 'Link copied to clipboard!',
+        buttons: [{ type: 'ok' }]
+      });
+    }
   };
 
   if (loading) {
@@ -75,13 +80,12 @@ export function FriendsScreen() {
             {copied ? 'Copied!' : 'Copy Invite Link'}
           </button>
         </div>
-        {/* Decorative Circles */}
         <div className="absolute -top-10 -right-10 w-32 h-32 bg-white/10 rounded-full blur-2xl" />
         <div className="absolute -bottom-10 -left-10 w-32 h-32 bg-black/10 rounded-full blur-2xl" />
       </div>
 
       {/* Stats Grid */}
-      {refData && (
+      {refData?.myStats && (
         <div className="grid grid-cols-2 gap-4 mb-6">
           <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-center">
             <div className="text-zinc-400 text-xs mb-1">Total Friends</div>
@@ -98,7 +102,7 @@ export function FriendsScreen() {
       <div className="space-y-3">
         <h3 className="text-lg font-bold text-zinc-400">Your Friends</h3>
         
-        {(!refData || refData.referrals.length === 0) ? (
+        {(!refData?.referrals || refData.referrals.length === 0) ? (
           <div className="text-center py-10 text-zinc-500 bg-zinc-900/50 rounded-xl border border-zinc-800 border-dashed">
             <Users size={48} className="mx-auto mb-3 opacity-50" />
             <p>No friends invited yet.</p>
