@@ -1,6 +1,6 @@
 export const runtime = 'edge';
 import { NextResponse } from 'next/server';
-import crypto from 'crypto';
+
 import { queryD1, executeD1 } from '@/lib/db';
 
 // Helper to validate Telegram initData
