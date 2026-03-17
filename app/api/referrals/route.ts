@@ -1,4 +1,4 @@
-export const runtime = 'edge';
+
 import { NextResponse } from 'next/server';
 import { queryD1, executeD1 } from '@/lib/db';
 
