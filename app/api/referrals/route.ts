@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { queryD1 } from '@/lib/db';
-import crypto from 'crypto'; // تذكر تفعيل node_compat في wrangler.toml
+
 
 function validateTelegramWebAppData(initData: string): boolean {
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
