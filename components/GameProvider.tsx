@@ -319,7 +319,7 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
     setIsWatchingAd(true);
     try {
       if (window.Adsgram) {
-        const blockId = process.env.NEXT_PUBLIC_ADSGRAM_BLOCK_ID || 'test-block-id';
+        const blockId = process.env.NEXT_PUBLIC_ADSGRAM_BLOCK_ID || '25333';
         const AdController = window.Adsgram.init({ blockId });
         try {
           await AdController.show();
