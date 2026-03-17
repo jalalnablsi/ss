@@ -1,10 +1,30 @@
 export const runtime = 'edge';
 import { NextResponse } from 'next/server';
-
 import { queryD1, executeD1 } from '@/lib/db';
 
-// Helper to validate Telegram initData
-function validateTelegramWebAppData(initData: string): boolean {
+// --- دوال التشفير المتوافقة مع Edge Runtime ---
+
+async function hmacSha256(key: string | ArrayBuffer, data: string): Promise<ArrayBuffer> {
+  const encoder = new TextEncoder();
+  const cryptoKey = await crypto.subtle.importKey(
+    'raw',
+    typeof key === 'string' ? encoder.encode(key) : key,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  return await crypto.subtle.sign('HMAC', cryptoKey, encoder.encode(data));
+}
+
+function bufferToHex(buffer: ArrayBuffer): string {
+  return Array.from(new Uint8Array(buffer))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+// --- دالة التحقق المعدلة (Async) ---
+
+async function validateTelegramWebAppData(initData: string): Promise<boolean> {
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
   if (!botToken) return false;
 
@@ -15,14 +35,12 @@ function validateTelegramWebAppData(initData: string): boolean {
 
     urlParams.delete('hash');
     const keys = Array.from(urlParams.keys()).sort();
-    let dataCheckString = '';
-    for (const key of keys) {
-      dataCheckString += `${key}=${urlParams.get(key)}\n`;
-    }
-    dataCheckString = dataCheckString.slice(0, -1);
+    let dataCheckString = keys.map(key => `${key}=${urlParams.get(key)}`).join('\n');
 
-    const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
-    const calculatedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+    // استخدام Web Crypto بدلاً من createHmac
+    const secretKeyBuffer = await hmacSha256('WebAppData', botToken);
+    const calculatedHashBuffer = await hmacSha256(secretKeyBuffer, dataCheckString);
+    const calculatedHash = bufferToHex(calculatedHashBuffer);
 
     return calculatedHash === hash;
   } catch (error) {
@@ -38,39 +56,34 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Missing parameters' }, { status: 400 });
     }
 
-    // 1. Validate Telegram Data (Anti-Bot)
-    const isValid = validateTelegramWebAppData(initData);
+    // 1. التحقق (إضافة await ضرورية هنا)
+    const isValid = await validateTelegramWebAppData(initData);
     if (!isValid && process.env.TELEGRAM_BOT_TOKEN) {
-      return NextResponse.json({ error: 'Invalid Telegram data. Possible bot attack.' }, { status: 403 });
+      return NextResponse.json({ error: 'Invalid Telegram data.' }, { status: 403 });
     }
 
-    // Parse user data
     const urlParams = new URLSearchParams(initData);
     const userStr = urlParams.get('user');
-    if (!userStr) {
-      return NextResponse.json({ error: 'No user data found' }, { status: 400 });
-    }
+    if (!userStr) return NextResponse.json({ error: 'No user data' }, { status: 400 });
 
     const tgUser = JSON.parse(userStr);
     const telegramId = tgUser.id.toString();
 
-    // 2. Fetch User from D1
+    // 2. جلب المستخدم من D1
     const users = await queryD1('SELECT coins, challenge_coins, completed_tasks FROM users WHERE telegram_id = ?', [telegramId]);
     const user = users[0];
 
-    if (!user) {
-      return NextResponse.json({ error: 'User not found' }, { status: 404 });
-    }
+    if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 });
 
     const completedTasks = JSON.parse(user.completed_tasks || '[]');
     if (completedTasks.includes(taskId)) {
       return NextResponse.json({ error: 'Task already completed' }, { status: 400 });
     }
 
-    // Special case for wallet connection
+    // حالة خاصة لربط المحفظة
     if (taskId === 'connect_wallet') {
       const newCompletedTasks = [...completedTasks, taskId];
-      const newCoins = user.coins + 5000;
+      const newCoins = (user.coins || 0) + 5000;
       const newChallengeCoins = (user.challenge_coins || 0) + 5000;
 
       await executeD1(`
@@ -85,7 +98,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ user: updatedUser });
     }
 
-    // 3. Define Task Rewards (Server-Side Truth)
+    // 3. جلب بيانات المهمة من جدول المهام
     const tasks = await queryD1('SELECT id, reward_coins FROM tasks WHERE id = ?', [taskId]);
     const taskData = tasks[0];
 
@@ -93,11 +106,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Invalid task ID' }, { status: 400 });
     }
 
-    const reward = taskData.reward_coins;
+    const reward = taskData.reward_coins || 0;
 
-    // 4. Update User
+    // 4. تحديث المستخدم بالمكافأة
     const newCompletedTasks = [...completedTasks, taskId];
-    const newCoins = user.coins + reward;
+    const newCoins = (user.coins || 0) + reward;
     const newChallengeCoins = (user.challenge_coins || 0) + reward;
 
     await executeD1(`
