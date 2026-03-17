@@ -1,9 +1,13 @@
 export const runtime = 'edge';
+// app/api/sync/route.ts
+// تم إزالة: export const runtime = 'edge'; 
+// السبب: لضمان استقرار عمليات قاعدة البيانات D1 ومنع تضارب التحديثات (Race Conditions)
+
 import { NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { queryD1, executeD1 } from '@/lib/db';
 
-// Helper to validate Telegram initData (نفس الدالة السابقة)
+// Helper to validate Telegram initData
 function validateTelegramWebAppData(initData: string): boolean {
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
   if (!botToken) return false;
@@ -40,7 +44,6 @@ export async function POST(req: Request) {
 
     // 1. Validate Telegram Data (Anti-Bot)
     const isValid = validateTelegramWebAppData(initData);
-    // في وضع الإنتاج، نرفض الطلب إذا فشل التحقق
     if (!isValid && process.env.TELEGRAM_BOT_TOKEN) {
       return NextResponse.json({ error: 'Invalid Telegram data. Possible bot attack.' }, { status: 403 });
     }
@@ -73,17 +76,18 @@ export async function POST(req: Request) {
     const timePassedMs = now - user.last_update_time;
     const timePassedSec = Math.floor(timePassedMs / 1000);
     
-    // معدل استعادة الطاقة (نفس المعادلة الأصلية: كاملة كل 30 دقيقة)
+    // معدل استعادة الطاقة (كاملة كل 30 دقيقة = 1800 ثانية)
     const energyRegenRate = user.max_energy / 1800; 
     const recoveredEnergy = Math.floor(timePassedSec * energyRegenRate);
     
     // الطاقة الحالية المتاحة (المخزنة + المستعادة حديثاً - مع سقف أقصى)
+    // هذه المعادلة هي سر حل مشكلة "الطاقة التي تصفر فجأة"
     let currentEnergyPool = Math.min(user.max_energy, user.energy + recoveredEnergy);
 
     // حساب المضاعف الحالي
     const multiplier = user.tap_multiplier_end_time > now ? user.tap_multiplier : 1;
 
-    // متغيرات الإعلانات (سنحدثها إذا لزم الأمر)
+    // متغيرات الإعلانات
     let newAdsWatchedToday = user.ads_watched_today;
     let newLastAdWatchDate = user.last_ad_watch_date;
     let newTapMultiplierEndTime = user.tap_multiplier_end_time;
@@ -93,47 +97,37 @@ export async function POST(req: Request) {
     if (taps && Array.isArray(taps) && taps.length > 0) {
       const reportedTapsCount = taps.length;
 
-      // الحماية الأساسية: الحد الأقصى المسموح به نظرياً
-      // نفترض أن الإنسان لا يستطيع الضغط أكثر من 15 مرة في الثانية الواحدة بشكل مستمر
-      // نضيف هامش خطأ صغير (buffer) لتأخير الشبكة
+      // الحماية: الحد الأقصى المسموح به = (الثواني المنقضية * 15 لمسة) + هامش 10 للشبكة
       const maxAllowedTaps = (timePassedSec * 15) + 10; 
 
-      // العدد الفعلي المقبول هو الأقل بين:
-      // 1. العدد الذي أرسله العميل
-      // 2. الحد الأقصى المسموح به زمنياً
-      // 3. الطاقة المتاحة حالياً
+      // نأخذ أقل رقم بين: المرسل، المسموح به زمنياً، والطاقة المتاحة
       const validTapsCount = Math.min(reportedTapsCount, maxAllowedTaps, Math.floor(currentEnergyPool));
 
       if (validTapsCount > 0) {
         newTotalTaps += validTapsCount;
-        currentEnergyPool -= validTapsCount; // خصم الطاقة
+        currentEnergyPool -= validTapsCount; // خصم الطاقة من المجموعة المحلية
         
         const earnedCoins = validTapsCount * multiplier;
         newCoins += earnedCoins;
         newChallengeCoins += earnedCoins;
       }
-      // إذا كان validTapsCount === 0، فهذا يعني إما نفاد الطاقة أو محاولة غش (إرسال عدد كبير جداً في وقت قليل)
-      // نتجاهل اللمسات الزائدة بصمت للحفاظ على استقرار اللعبة
+      // اللمسات الزائدة تُهمل بصمت (Anti-Cheat)
     }
 
-    // 4. Process Ad Rewards (Server-Side Validation)
+    // 4. Process Ad Rewards
     if (adWatchedType) {
       const today = new Date().toISOString().split('T')[0];
       
-      // Reset daily count if it's a new day
       if (newLastAdWatchDate !== today) {
         newAdsWatchedToday = 0;
       }
 
-      // Check daily limit (30 ads)
       if (newAdsWatchedToday < 30) {
-        // Check hourly limit (5 ads)
         const oneHourAgo = new Date(now - 60 * 60 * 1000).toISOString();
         const recentAds = await queryD1('SELECT COUNT(*) as count FROM ad_watches WHERE telegram_id = ? AND watched_at >= ?', [telegramId, oneHourAgo]);
         const adsLastHour = recentAds[0]?.count || 0;
 
         if (adsLastHour < 5) {
-          // Check cooldown between ads (Simple check)
           const lastAds = await queryD1('SELECT watched_at FROM ad_watches WHERE telegram_id = ? ORDER BY watched_at DESC LIMIT 1', [telegramId]);
           const lastAd = lastAds[0];
           let canWatch = true;
@@ -142,13 +136,13 @@ export async function POST(req: Request) {
             const lastAdTime = new Date(lastAd.watched_at).getTime();
             const timeSinceLastAd = now - lastAdTime;
             const requiredCooldown = adsLastHour * 30 * 1000; 
+            
             if (timeSinceLastAd < requiredCooldown) {
               canWatch = false;
             }
           }
 
           if (canWatch) {
-            // Record the ad watch
             await executeD1('INSERT INTO ad_watches (id, telegram_id, watched_at) VALUES (?, ?, ?)', [
               crypto.randomUUID(), telegramId, new Date(now).toISOString()
             ]);
@@ -156,23 +150,22 @@ export async function POST(req: Request) {
             newAdsWatchedToday += 1;
             newLastAdWatchDate = today;
 
-            // Apply Rewards
             newCoins += 1000;
             newChallengeCoins += 1000;
             
             if (adWatchedType === 'multiplier') {
-              newTapMultiplierEndTime = now + 5 * 60 * 1000; // 5 mins
+              newTapMultiplierEndTime = now + 5 * 60 * 1000;
             } else if (adWatchedType === 'energy') {
-              currentEnergyPool = user.max_energy; // تعبئة فورية للطاقة
+              currentEnergyPool = user.max_energy; // تعبئة فورية
             } else if (adWatchedType === 'bot') {
-              newAutoBotActiveUntil = now + 6 * 60 * 60 * 1000; // 6 hours
+              newAutoBotActiveUntil = now + 6 * 60 * 60 * 1000;
             }
           }
         }
       }
     }
 
-    // 4.5 Handle Referrals (Logic preserved from original)
+    // 4.5 Handle Referrals (First time reaching 500 taps)
     if (newTotalTaps >= 500 && user.total_taps < 500 && user.referred_by) {
       try {
         const referrers = await queryD1('SELECT coins, challenge_coins, referrals_activated, referral_coins_earned FROM users WHERE telegram_id = ?', [user.referred_by]);
@@ -209,7 +202,7 @@ export async function POST(req: Request) {
     `, [
       newCoins, 
       newChallengeCoins, 
-      Math.floor(currentEnergyPool), // حفظ الطاقة المتبقية الدقيقة
+      Math.floor(currentEnergyPool), 
       newTotalTaps,
       newTapMultiplierEndTime,
       newAutoBotActiveUntil,
@@ -219,7 +212,7 @@ export async function POST(req: Request) {
       telegramId
     ]);
 
-    // Fetch updated user data to return
+    // Fetch updated user data
     const updatedUsers = await queryD1('SELECT * FROM users WHERE telegram_id = ?', [telegramId]);
     const updatedUser = updatedUsers[0];
     
