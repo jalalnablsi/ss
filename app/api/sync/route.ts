@@ -4,7 +4,7 @@ export const runtime = 'edge';
 // السبب: لضمان استقرار عمليات قاعدة البيانات D1 ومنع تضارب التحديثات (Race Conditions)
 
 import { NextResponse } from 'next/server';
-import crypto from 'crypto';
+
 import { queryD1, executeD1 } from '@/lib/db';
 
 // Helper to validate Telegram initData
