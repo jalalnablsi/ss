@@ -1,10 +1,30 @@
 export const runtime = 'edge';
 import { NextResponse } from 'next/server';
-
 import { queryD1, executeD1 } from '@/lib/db';
 
-// Helper to validate Telegram initData
-function validateTelegramWebAppData(initData: string): boolean {
+// --- دوال مساعدة للتشفير متوافقة مع Edge Runtime ---
+
+async function hmacSha256(key: string | ArrayBuffer, data: string): Promise<ArrayBuffer> {
+  const encoder = new TextEncoder();
+  const cryptoKey = await crypto.subtle.importKey(
+    'raw',
+    typeof key === 'string' ? encoder.encode(key) : key,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  return await crypto.subtle.sign('HMAC', cryptoKey, encoder.encode(data));
+}
+
+function bufferToHex(buffer: ArrayBuffer): string {
+  return Array.from(new Uint8Array(buffer))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+// --- دالة التحقق من بيانات تليجرام ---
+
+async function validateTelegramWebAppData(initData: string): Promise<boolean> {
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
   if (!botToken) {
     console.warn('TELEGRAM_BOT_TOKEN is missing. Skipping validation for development.');
@@ -18,7 +38,7 @@ function validateTelegramWebAppData(initData: string): boolean {
 
     urlParams.delete('hash');
     
-    // Sort keys alphabetically
+    // ترتيب المفاتيح أبجدياً
     const keys = Array.from(urlParams.keys()).sort();
     let dataCheckString = '';
     for (const key of keys) {
@@ -26,8 +46,10 @@ function validateTelegramWebAppData(initData: string): boolean {
     }
     dataCheckString = dataCheckString.slice(0, -1);
 
-    const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
-    const calculatedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+    // تنفيذ التشفير باستخدام Web Crypto API
+    const secretKeyBuffer = await hmacSha256('WebAppData', botToken);
+    const calculatedHashBuffer = await hmacSha256(secretKeyBuffer, dataCheckString);
+    const calculatedHash = bufferToHex(calculatedHashBuffer);
 
     return calculatedHash === hash;
   } catch (error) {
@@ -35,6 +57,8 @@ function validateTelegramWebAppData(initData: string): boolean {
     return false;
   }
 }
+
+// --- دالة المعالجة الرئيسية ---
 
 export async function POST(req: Request) {
   try {
@@ -44,15 +68,14 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Missing initData' }, { status: 400 });
     }
 
-    // 1. Validate Telegram Data
-    const isValid = validateTelegramWebAppData(initData);
+    // 1. التحقق من بيانات تليجرام (أصبحت async الآن)
+    const isValid = await validateTelegramWebAppData(initData);
     
-    // If validation fails, we block access (Production Mode)
     if (!isValid && process.env.TELEGRAM_BOT_TOKEN) {
       return NextResponse.json({ error: 'Invalid Telegram data. Possible bot attack.' }, { status: 403 });
     }
 
-    // Parse user data
+    // تحليل بيانات المستخدم
     const urlParams = new URLSearchParams(initData);
     const userStr = urlParams.get('user');
     if (!userStr) {
@@ -64,20 +87,20 @@ export async function POST(req: Request) {
     const now = Date.now();
     const today = new Date().toISOString().split('T')[0];
 
-    // Ensure challenge_coins column exists if it doesn't (migration)
+    // التأكد من وجود عمود عملات التحدي (Migration)
     try {
       await executeD1('ALTER TABLE users ADD COLUMN challenge_coins INTEGER DEFAULT 0');
     } catch (e) {
-      // Ignore if already exists
+      // تجاهل إذا كان موجوداً مسبقاً
     }
 
-    // 2. Fetch User from D1
+    // 2. جلب المستخدم من قاعدة البيانات D1
     const users = await queryD1('SELECT * FROM users WHERE telegram_id = ?', [telegramId]);
     let user = users[0];
 
-    // 3. Create User if Not Exists
+    // 3. إنشاء مستخدم جديد إذا لم يكن موجوداً
     if (!user) {
-      const id = crypto.randomUUID();
+      const id = crypto.randomUUID(); // مدعوم عالمياً في Edge
       const completedTasks = JSON.stringify([]);
       
       await executeD1(`
@@ -90,7 +113,6 @@ export async function POST(req: Request) {
         now, referralCode || null, completedTasks, today, 0
       ]);
 
-      // Handle Referral Logic
       if (referralCode && referralCode !== telegramId) {
         await executeD1('UPDATE users SET referrals_count = referrals_count + 1 WHERE telegram_id = ?', [referralCode]);
       }
@@ -98,21 +120,19 @@ export async function POST(req: Request) {
       const newUsers = await queryD1('SELECT * FROM users WHERE telegram_id = ?', [telegramId]);
       user = newUsers[0];
     } else {
-      // 4. Calculate Offline Earnings & Energy Regeneration (Server-Side Anti-Cheat)
-      let updates: any = {};
+      // 4. تحديثات تلقائية للمستخدم الحالي
+      let updates: Record<string, any> = {};
       let needsUpdate = false;
 
-      // Reset daily ads
       if (user.last_ad_watch_date !== today) {
         updates.ads_watched_today = 0;
         updates.last_ad_watch_date = today;
         needsUpdate = true;
       }
 
-      const timePassedMs = now - user.last_update_time;
-      const timePassedSec = Math.floor(timePassedMs / 1000);
+      const timePassedSec = Math.floor((now - user.last_update_time) / 1000);
 
-      // Energy Regeneration (500 energy per 30 mins = ~0.277 per sec)
+      // تجديد الطاقة
       if (user.energy < user.max_energy) {
         const energyToRecover = Math.floor(timePassedSec * (user.max_energy / 1800));
         const newEnergy = Math.min(user.max_energy, user.energy + energyToRecover);
@@ -122,13 +142,13 @@ export async function POST(req: Request) {
         }
       }
 
-      // Auto-Bot Offline Earnings
+      // أرباح الـ Auto-Bot
       if (user.auto_bot_active_until > user.last_update_time) {
         const botActiveTimeMs = Math.min(now, user.auto_bot_active_until) - user.last_update_time;
         const botActiveTimeSec = Math.floor(botActiveTimeMs / 1000);
         if (botActiveTimeSec > 0) {
-          const earnedCoins = Math.floor(botActiveTimeSec * 0.5); // 0.5 coins per sec
-          updates.coins = user.coins + earnedCoins;
+          const earnedCoins = Math.floor(botActiveTimeSec * 0.5);
+          updates.coins = (user.coins || 0) + earnedCoins;
           updates.challenge_coins = (user.challenge_coins || 0) + earnedCoins;
           needsUpdate = true;
         }
@@ -136,23 +156,15 @@ export async function POST(req: Request) {
 
       if (needsUpdate) {
         updates.last_update_time = now;
-        
-        const setClauses = [];
-        const values = [];
-        for (const [key, value] of Object.entries(updates)) {
-          setClauses.push(`${key} = ?`);
-          values.push(value);
-        }
-        values.push(telegramId);
+        const setClauses = Object.keys(updates).map(key => `${key} = ?`).join(', ');
+        const values = [...Object.values(updates), telegramId];
 
-        await executeD1(`UPDATE users SET ${setClauses.join(', ')} WHERE telegram_id = ?`, values);
-
+        await executeD1(`UPDATE users SET ${setClauses} WHERE telegram_id = ?`, values);
         const updatedUsers = await queryD1('SELECT * FROM users WHERE telegram_id = ?', [telegramId]);
         user = updatedUsers[0];
       }
     }
 
-    // Parse JSON fields and convert booleans
     user.completed_tasks = JSON.parse(user.completed_tasks || '[]');
     user.wallet_connected = Boolean(user.wallet_connected);
 
