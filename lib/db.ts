@@ -1,59 +1,30 @@
+// lib/db.ts
+import { getRequestContext } from '@cloudflare/next-on-pages';
+
 export async function queryD1(sql: string, params: any[] = []) {
-  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
-  const databaseId = process.env.CLOUDFLARE_DATABASE_ID;
-  const apiToken = process.env.CLOUDFLARE_API_TOKEN;
+  try {
+    // حاول استخدام الاتصال المباشر (الأسرع)
+    const context = getRequestContext();
+    const db = context?.env?.DB;
 
-  if (!accountId || !databaseId || !apiToken) {
-    throw new Error('Cloudflare D1 credentials are not configured in environment variables.');
+    if (db) {
+      const { results } = await db.prepare(sql).bind(...params).all();
+      return results;
+    }
+  } catch (e) {
+    console.log("Binding not found, falling back to API...");
   }
 
-  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${databaseId}/query`;
-
-  const response = await fetch(url, {
+  // إذا لم يجد الـ Binding (مثلاً تشغله لوكال)، استخدم الـ API القديم الخاص بك
+  const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/d1/database/${process.env.CLOUDFLARE_DATABASE_ID}/query`, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${apiToken}`,
+      'Authorization': `Bearer ${process.env.CLOUDFLARE_API_TOKEN}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ sql, params }),
   });
 
   const data = await response.json();
-
-  if (!data.success) {
-    console.error('D1 Error:', data.errors);
-    throw new Error(data.errors[0]?.message || 'Database query failed');
-  }
-
   return data.result[0].results;
-}
-
-export async function executeD1(sql: string, params: any[] = []) {
-  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
-  const databaseId = process.env.CLOUDFLARE_DATABASE_ID;
-  const apiToken = process.env.CLOUDFLARE_API_TOKEN;
-
-  if (!accountId || !databaseId || !apiToken) {
-    throw new Error('Cloudflare D1 credentials are not configured in environment variables.');
-  }
-
-  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${databaseId}/query`;
-
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ sql, params }),
-  });
-
-  const data = await response.json();
-
-  if (!data.success) {
-    console.error('D1 Error:', data.errors);
-    throw new Error(data.errors[0]?.message || 'Database execution failed');
-  }
-
-  return data.result[0];
 }
