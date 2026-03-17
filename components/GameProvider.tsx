@@ -108,9 +108,12 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
     resolve: null,
   });
 
-  // --- ANTI-CHEAT & SUPABASE SYNC QUEUE ---
-  const tapQueue = useRef<{ t: number; a: number }[]>([]);
-  const isSyncing = useRef(false);
+  // --- IMPROVED SYNC QUEUE & ANTI-CHEAT ---
+  // نخزن فقط عدد اللمسات غير المرسلة، لا نحتاج لتخزين الوقت لكل لمسة محلياً
+  const pendingTapsCount = useRef<number>(0);
+  const isSyncing = useRef<boolean>(false);
+  const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastServerTimeRef = useRef<number>(0);
 
   // Initialize Telegram WebApp and Authenticate
   useEffect(() => {
@@ -134,7 +137,6 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
           return;
         }
 
-        // Authenticate with Backend
         const response = await fetch('/api/auth', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -149,7 +151,6 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
 
         const data = await response.json();
         
-        // Map backend user to frontend state
         setState({
           coins: data.user.coins,
           energy: data.user.energy,
@@ -159,7 +160,7 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
           autoBotActiveUntil: data.user.auto_bot_active_until,
           adsWatchedToday: data.user.ads_watched_today,
           lastAdWatchDate: data.user.last_ad_watch_date,
-          lastUpdateTime: data.serverTime,
+          lastUpdateTime: data.serverTime, // مهم جداً: نحتفظ بوقت السيرفر
           totalTaps: data.user.total_taps,
           walletConnected: data.user.wallet_connected,
           walletAddress: data.user.wallet_address,
@@ -169,7 +170,7 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
         });
         
         setCompletedTasks(data.user.completed_tasks || []);
-
+        lastServerTimeRef.current = data.serverTime;
         setIsLoaded(true);
       } catch (err) {
         console.error('Init error:', err);
@@ -180,32 +181,49 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
     initApp();
   }, []);
 
-  const syncWithSupabase = useCallback(async (adWatchedType?: string) => {
-    if (!isLoaded || (tapQueue.current.length === 0 && !adWatchedType) || isSyncing.current) return;
-    isSyncing.current = true;
+  // --- OPTIMIZED SYNC FUNCTION ---
+  const syncWithServer = useCallback(async (adWatchedType?: string) => {
+    // إذا كان هناك مزامنة جارية، لا تبدأ أخرى إلا إذا كان هناك إعلان (الأولوية للإعلان)
+    if (isSyncing.current && !adWatchedType) return;
+    
+    // إذا لم يكن هناك شيء للمزامنة
+    if (pendingTapsCount.current === 0 && !adWatchedType) return;
 
-    const tapsToSync = [...tapQueue.current];
-    tapQueue.current = [];
+    isSyncing.current = true;
+    const tapsToSend = pendingTapsCount.current;
+    
+    // تصفير العداد المحلي مؤقتاً (Optimistic Reset)
+    // إذا فشل الطلب، سنعيده لاحقاً
+    pendingTapsCount.current = 0; 
+
+    if (syncTimeoutRef.current) {
+      clearTimeout(syncTimeoutRef.current);
+      syncTimeoutRef.current = null;
+    }
 
     try {
       const initData = window.Telegram?.WebApp?.initData;
       if (!initData) throw new Error('No initData');
 
+      // نرسل عدد اللمسات فقط، السيرفر سيحسب الرياضيات
       const response = await fetch('/api/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           initData,
-          taps: tapsToSync,
+          taps: Array(tapsToSend).fill({ t: Date.now() }), // مصفوفة وهمية للعدد
           adWatchedType,
         }),
       });
 
-      if (!response.ok) throw new Error('Sync failed');
+      if (!response.ok) {
+        const err = await response.text();
+        throw new Error(err || 'Sync failed');
+      }
 
       const data = await response.json();
       
-      // Update state with server truth
+      // تحديث الحالة ببيانات السيرفر (Source of Truth)
       setState(prev => ({
         ...prev,
         coins: data.user.coins,
@@ -217,138 +235,86 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
         adsWatchedToday: data.user.ads_watched_today,
         lastUpdateTime: data.serverTime,
       }));
+      lastServerTimeRef.current = data.serverTime;
 
     } catch (error) {
       console.error('Sync failed, restoring queue', error);
-      tapQueue.current = [...tapsToSync, ...tapQueue.current];
+      // في حالة الفشل، نعيد اللمسات للطابور لمحاولة لاحقة
+      pendingTapsCount.current += tapsToSend;
+      // إعادة جدولة المحاولة بعد وقت أطول
+      syncTimeoutRef.current = setTimeout(() => syncWithServer(), 5000);
     } finally {
       isSyncing.current = false;
     }
-  }, [isLoaded]);
+  }, []);
 
-  // Periodic Sync
+  // جدولة المزامنة التلقائية (Debounce)
+  const scheduleSync = useCallback(() => {
+    if (syncTimeoutRef.current) return;
+    
+    syncTimeoutRef.current = setTimeout(() => {
+      syncWithServer();
+    }, 1000); // انتظار ثانية واحدة بعد آخر لمسة قبل الإرسال
+  }, [syncWithServer]);
+
+  // مزامنة دورية كل 5 ثوانٍ للحفاظ على تحديث الطاقة (حتى بدون لمس)
   useEffect(() => {
-    const interval = setInterval(() => syncWithSupabase(), 3000);
+    const interval = setInterval(() => {
+      if (isLoaded && !isSyncing.current) {
+        syncWithServer();
+      }
+    }, 5000);
     return () => clearInterval(interval);
-  }, [syncWithSupabase]);
+  }, [isLoaded, syncWithServer]);
 
-  // Handle TON Wallet Connection Reward
+  // تنظيف عند الخروج
   useEffect(() => {
-    const handleWalletConnect = async () => {
-      if (isLoaded && wallet && !state.walletConnected) {
-        // Optimistic UI update
-        setState(prev => ({
-          ...prev,
-          walletConnected: true,
-          walletAddress: wallet.account.address,
-        }));
-        
-        // Claim task on backend
-        try {
-          const initData = window.Telegram?.WebApp?.initData;
-          if (initData && !completedTasks.includes('connect_wallet')) {
-            const response = await fetch('/api/tasks', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ initData, taskId: 'connect_wallet' }),
-            });
-            
-            if (response.ok) {
-              const data = await response.json();
-              setCompletedTasks(data.user.completed_tasks || []);
-              setState(prev => ({
-                ...prev,
-                coins: data.user.coins,
-                walletConnected: true,
-                walletAddress: wallet.account.address,
-              }));
-            }
-          }
-        } catch (e) {
-          console.error('Failed to claim wallet reward', e);
-        }
-      } else if (isLoaded && !wallet && state.walletConnected) {
-        setState(prev => ({
-          ...prev,
-          walletConnected: false,
-          walletAddress: null,
-        }));
+    return () => {
+      if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+      if (pendingTapsCount.current > 0 && isLoaded) {
+        // محاولة أخيرة للإرسال
+        syncWithServer(); 
       }
     };
+  }, [isLoaded, syncWithServer]);
 
-    handleWalletConnect();
-  }, [wallet, isLoaded, state.walletConnected, completedTasks]);
-
-  // Client-side optimistic updates (Energy regen & Bot earnings)
-  useEffect(() => {
-    if (!isLoaded) return;
-
-    const interval = setInterval(() => {
-      setState(prev => {
-        const now = Date.now();
-        let newEnergy = prev.energy;
-        let newCoins = prev.coins;
-        
-        const timePassedSec = (now - prev.lastUpdateTime) / 1000;
-        const energyToAdd = timePassedSec * (500 / 1800);
-        
-        if (prev.energy < prev.maxEnergy) {
-          newEnergy = Math.min(prev.maxEnergy, prev.energy + energyToAdd);
-        }
-
-        if (prev.autoBotActiveUntil > now) {
-          newCoins += timePassedSec * 0.5;
-        }
-
-        let newMultiplier = prev.tapMultiplier;
-        if (prev.tapMultiplierEndTime > 0 && prev.tapMultiplierEndTime < now) {
-          newMultiplier = 1;
-        }
-
-        return {
-          ...prev,
-          coins: newCoins,
-          energy: newEnergy,
-          tapMultiplier: newMultiplier,
-          lastUpdateTime: now,
-        };
-      });
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [isLoaded]);
-
-  const [lastTapTime, setLastTapTime] = useState(0);
-
+  // --- TAP LOGIC (OPTIMISTIC ONLY) ---
   const tap = useCallback((amount: number) => {
-    const now = Date.now();
-    if (now - lastTapTime < 60) {
-      return false; // Anti-cheat: Max ~15 taps per second
-    }
-    setLastTapTime(now);
-
     let success = false;
+    
     setState(prev => {
+      // التحقق من الطاقة بناءً على الحالة المحلية الحالية
+      // ملاحظة: هذا تحقق بصري فقط، السيرفر هو من يقرر القبول النهائي
       if (prev.energy >= 1) {
         success = true;
+        const now = Date.now();
         const multiplier = prev.tapMultiplierEndTime > now ? prev.tapMultiplier : 1;
         const totalAmount = amount * multiplier;
+
+        // 1. تحديث بصري فوري (Optimistic UI)
+        // نخصم الطاقة ونزيد العملات محلياً ليعطي شعوراً بالسرعة
+        // لا نقوم بتحديث lastUpdateTime هنا لتجنب التعارض مع حسابات السيرفر
         
-        tapQueue.current.push({ t: now, a: totalAmount });
+        // 2. إضافة للطابور
+        pendingTapsCount.current += 1;
+
+        // 3. جدولة الإرسال
+        scheduleSync();
 
         return {
           ...prev,
           coins: prev.coins + totalAmount,
           energy: prev.energy - 1,
           totalTaps: prev.totalTaps + 1,
-          lastUpdateTime: now,
         };
       }
       return prev;
     });
-    return success;
-  }, [lastTapTime]);
 
+    return success;
+  }, [scheduleSync]);
+
+  // --- ADS LOGIC ---
   const showAd = async (title: string, description: string): Promise<boolean> => {
     setIsWatchingAd(true);
     try {
@@ -379,23 +345,17 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
 
   const watchAdForMultiplier = async () => {
     const success = await showAd('Double Strike (x2)', 'Watch this ad to get x2 multiplier for 5 minutes.');
-    if (success) {
-      await syncWithSupabase('multiplier');
-    }
+    if (success) await syncWithServer('multiplier');
   };
 
   const watchAdForEnergy = async () => {
     const success = await showAd('Full Energy Refill', 'Watch this ad to instantly restore your energy.');
-    if (success) {
-      await syncWithSupabase('energy');
-    }
+    if (success) await syncWithServer('energy');
   };
 
   const watchAdForBot = async () => {
     const success = await showAd('Auto-Tap Bot', 'Watch this ad to activate or progress the Auto-Bot.');
-    if (success) {
-      await syncWithSupabase('bot');
-    }
+    if (success) await syncWithServer('bot');
   };
 
   const claimTask = useCallback(async (reward: number, taskId: string) => {
@@ -414,12 +374,7 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
       if (response.ok) {
         const data = await response.json();
         setCompletedTasks(data.user.completed_tasks || []);
-        setState(prev => ({
-          ...prev,
-          coins: data.user.coins,
-        }));
-      } else {
-        console.error('Failed to claim task');
+        setState(prev => ({ ...prev, coins: data.user.coins }));
       }
     } catch (e) {
       console.error('Task claim error:', e);
@@ -432,7 +387,6 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
       coins: prev.coins + 1500,
       referralCoinsEarned: prev.referralCoinsEarned + 1500,
     }));
-    // In a real app, send this to a dedicated /api/referrals endpoint
   }, []);
 
   if (error) {
@@ -441,7 +395,6 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
         <AlertCircle className="text-red-500 mb-4" size={64} />
         <h1 className="text-2xl font-bold mb-2">Access Denied</h1>
         <p className="text-zinc-400">{error}</p>
-        <p className="text-zinc-500 text-sm mt-8">Production Mode Active</p>
       </div>
     );
   }
@@ -467,16 +420,13 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
       claimReferralReward
     }}>
       {children}
-      
       <AdModal
         isOpen={fallbackAd.isOpen}
         title={fallbackAd.title}
         description={fallbackAd.description}
         onComplete={(success) => {
           setFallbackAd(prev => ({ ...prev, isOpen: false }));
-          if (fallbackAd.resolve) {
-            fallbackAd.resolve(success);
-          }
+          if (fallbackAd.resolve) fallbackAd.resolve(success);
         }}
       />
     </GameContext.Provider>
