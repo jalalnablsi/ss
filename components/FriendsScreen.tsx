@@ -42,7 +42,7 @@ export function FriendsScreen() {
   const getInviteLink = () => {
     if (!myId) return '';
     // تأكد من عدم وجود مسافات زائدة
-    return `https://t.me/Tap_hustle_bot?start=${myId}`;
+    return `https://t.me/Tap_hustle_bot/app?startapp=${myId}`;
   };
 
   const copyLink = () => {
