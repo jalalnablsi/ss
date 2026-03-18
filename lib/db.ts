@@ -1,61 +1,44 @@
 // lib/db.ts
 import { getRequestContext } from '@cloudflare/next-on-pages';
 
-// دالة مساعدة للحصول على قاعدة البيانات (Binding)
-// lib/db.ts
-
 async function getDBBinding() {
   try {
     const context = getRequestContext();
-    // استخدام (context?.env as any)?.DB لتجنب خطأ الـ TypeScript
     return (context?.env as any)?.DB || (process.env as any).DB;
   } catch (e) {
     return (process.env as any).DB;
   }
 }
 
-
-// 1. دالة جلب البيانات (SELECT)
-export async function queryD1(sql: string, params: any[] = []) {
+export async function queryD1<T = any>(sql: string, params: any[] = []): Promise<T[]> {
   const db = await getDBBinding();
+  if (!db) throw new Error("Database binding missing");
 
-  if (db) {
+  try {
     const { results } = await db.prepare(sql).bind(...params).all();
-    return results;
+    return results as T[];
+  } catch (error: any) {
+    console.error(`D1 Query Error: ${error.message}`, { sql, params });
+    throw error;
   }
-
-  // Fallback to API
-  const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/d1/database/${process.env.CLOUDFLARE_DATABASE_ID}/query`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${process.env.CLOUDFLARE_API_TOKEN}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ sql, params }),
-  });
-
-  const data = await response.json();
-  // تصحيح: الـ API يرجع النتائج داخل مصفوفة result
-  return data.result[0]?.results || [];
 }
 
-// 2. دالة تنفيذ العمليات (INSERT, UPDATE, DELETE, CREATE) - هذه هي الدالة المفقودة
 export async function executeD1(sql: string, params: any[] = []) {
   const db = await getDBBinding();
+  if (!db) throw new Error("Database binding missing");
 
-  if (db) {
-    return await db.prepare(sql).bind(...params).run();
+  try {
+    const stmt = db.prepare(sql).bind(...params);
+    // نستخدم run() للأوامر التي لا ترجع بيانات، و all() إذا كنا نتوقع نتائج
+    if (sql.trim().toUpperCase().startsWith('SELECT')) {
+      const { results } = await stmt.all();
+      return results;
+    } else {
+      const res = await stmt.run();
+      return res;
+    }
+  } catch (error: any) {
+    console.error(`D1 Execute Error: ${error.message}`, { sql, params });
+    throw error;
   }
-
-  // Fallback to API for execution
-  const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/d1/database/${process.env.CLOUDFLARE_DATABASE_ID}/query`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${process.env.CLOUDFLARE_API_TOKEN}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ sql, params }),
-  });
-
-  return await response.json();
 }
