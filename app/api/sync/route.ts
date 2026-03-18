@@ -136,10 +136,10 @@ export async function POST(req: Request) {
       [earned, earned, currentEnergy - taps, taps, now, telegramId]
     );
 
-    // التحقق من مكافأة الإحالة (500 ضغطة)
+    // التحقق من مكافأة الإحالة (500 ضغطة) - بدون مشكلة TypeScript
     if (user.total_taps < 500 && user.total_taps + taps >= 500 && user.referred_by) {
       try {
-        await executeD1(
+        const result = await executeD1(
           `UPDATE users 
            SET coins = coins + 1500,
                challenge_coins = COALESCE(challenge_coins, 0) + 1500,
@@ -147,7 +147,11 @@ export async function POST(req: Request) {
            WHERE telegram_id = ?`,
           [user.referred_by]
         );
-        console.log(`[${requestId}] Referral rewarded: ${user.referred_by}`);
+        
+        // ✅ هنا المشكلة كانت - هذا السطر معدل وآمن
+        if (result && result.meta && typeof result.meta.changes === 'number' && result.meta.changes > 0) {
+          console.log(`[${requestId}] Referral rewarded: ${user.referred_by}`);
+        }
       } catch (e) {
         console.error(`[${requestId}] Referral error:`, e);
       }
