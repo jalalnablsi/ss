@@ -1,11 +1,11 @@
 'use client';
 
-import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { motion, AnimatePresence, useAnimationFrame } from 'framer-motion';
-import { gameState, LocalGameState } from '@/lib/gameState';
-import { Zap, Bot, Sparkles } from 'lucide-react';
+import { gameState } from '@/lib/gameState';
+import { Zap, Bot, Sparkles, Gauge } from 'lucide-react';
 
-// --- Types ---
+// --- أنواع الجسيمات المحسّنة ---
 interface Particle {
   id: number;
   x: number;
@@ -16,46 +16,48 @@ interface Particle {
   opacity: number;
   scale: number;
   rotation: number;
+  color: string;
 }
 
-interface DisplayState {
-  coins: number;
-  energy: number;
-  maxEnergy: number;
-  tapMultiplier: number;
-  tapMultiplierEndTime: number;
-  autoBotActiveUntil: number;
-  totalTaps: number;
-}
-
-// --- Component ---
 export function TapScreen() {
-  // Server State (يأتي من props أو context)
-  const [serverState, setServerState] = useState<DisplayState>({
-    coins: 0,
-    energy: 500,
-    maxEnergy: 500,
-    tapMultiplier: 1,
-    tapMultiplierEndTime: 0,
-    autoBotActiveUntil: 0,
-    totalTaps: 0
-  });
-
-  // Local Optimistic State
-  const [localCoins, setLocalCoins] = useState(0);
-  const [localEnergy, setLocalEnergy] = useState(500);
-  const [particles, setParticles] = useState<Particle[]>([]);
+  // State محسّن
+  const [displayCoins, setDisplayCoins] = useState(0);
+  const [displayEnergy, setDisplayEnergy] = useState(500);
+  const [maxEnergy, setMaxEnergy] = useState(500);
+  const [tapMultiplier, setTapMultiplier] = useState(1);
+  const [multiplierEndTime, setMultiplierEndTime] = useState(0);
+  const [botActiveUntil, setBotActiveUntil] = useState(0);
   const [isSyncing, setIsSyncing] = useState(false);
   
-  // Refs للأداء
-  const containerRef = useRef<HTMLDivElement>(null);
-  const particleIdRef = useRef(0);
+  // Particles
+  const [particles, setParticles] = useState<Particle[]>([]);
   const particlesRef = useRef<Particle[]>([]);
-  const lastServerUpdateRef = useRef<number>(Date.now());
+  const particleIdRef = useRef(0);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const lastTapTimeRef = useRef(0);
+  const touchPointsRef = useRef<Map<number, { x: number; y: number }>>(new Map());
 
-  // Initialize
+  // Animation Frame للـ Particles (60fps)
+  useAnimationFrame(() => {
+    if (particlesRef.current.length === 0) return;
+
+    particlesRef.current = particlesRef.current
+      .map(p => ({
+        ...p,
+        y: p.y + p.velocityY,
+        x: p.x + p.velocityX,
+        velocityY: p.velocityY + 0.3, // Gravity أخف
+        opacity: p.opacity - 0.015,
+        scale: p.scale + 0.01,
+        rotation: p.rotation + 2
+      }))
+      .filter(p => p.opacity > 0);
+
+    setParticles([...particlesRef.current]);
+  });
+
+  // تهيئة اللعبة
   useEffect(() => {
-    // جلب الحالة الأولية
     const init = async () => {
       try {
         const response = await fetch('/api/auth', {
@@ -65,24 +67,23 @@ export function TapScreen() {
             initData: window.Telegram?.WebApp?.initData 
           }),
         });
-        
+
         if (response.ok) {
           const data = await response.json();
-          const user = data.user;
           
-          setServerState({
-            coins: user.coins,
-            energy: user.energy,
-            maxEnergy: user.max_energy,
-            tapMultiplier: user.tap_multiplier,
-            tapMultiplierEndTime: user.tap_multiplier_end_time,
-            autoBotActiveUntil: user.auto_bot_active_until,
-            totalTaps: user.total_taps
-          });
-          
-          setLocalCoins(user.coins);
-          setLocalEnergy(user.energy);
-          lastServerUpdateRef.current = Date.now();
+          setDisplayCoins(data.user.coins);
+          setDisplayEnergy(data.user.energy);
+          setMaxEnergy(data.user.maxEnergy);
+          setTapMultiplier(data.user.tapMultiplier);
+          setMultiplierEndTime(data.user.tapMultiplierEndTime);
+          setBotActiveUntil(data.user.autoBotActiveUntil);
+
+          // تحديث GameState
+          gameState.setServerState(
+            data.user.coins, 
+            data.user.energy, 
+            data.user.maxEnergy
+          );
         }
       } catch (e) {
         console.error('Init failed:', e);
@@ -91,277 +92,267 @@ export function TapScreen() {
 
     init();
 
-    // Setup GameState callbacks
+    // الاستماع لتحديثات GameState
     gameState.setCallbacks({
-      onStateChange: (state: LocalGameState) => {
-        // تحديث الـ UI المحلي فوراً
+      onStateChange: (state) => {
+        const pending = gameState.getPendingStats();
+        
+        // عرض سلس مع الـ pending
+        setDisplayCoins(state.localCoins + pending.pendingCoins);
+        setDisplayEnergy(Math.max(0, state.localEnergy - pending.pendingEnergy));
         setIsSyncing(state.isSyncing);
       },
       onSyncStart: () => setIsSyncing(true),
-      onSyncEnd: (success) => {
-        setIsSyncing(false);
-        if (success) {
-          // جلب التحديثات من السيرفر بعد النجاح
-          refreshServerState();
-        }
-      }
+      onSyncEnd: () => setIsSyncing(false)
     });
 
-    // Background sync كل 5 ثواني
-    const interval = setInterval(() => {
-      gameState.forceSync();
-      refreshServerState();
-    }, 5000);
-
-    return () => clearInterval(interval);
+    return () => {
+      gameState.destroy();
+    };
   }, []);
 
-  // Animation Frame للـ Particles (60fps)
-  useAnimationFrame(() => {
-    if (particlesRef.current.length === 0) return;
-
-    particlesRef.current = particlesRef.current.map(p => ({
-      ...p,
-      y: p.y + p.velocityY,
-      x: p.x + p.velocityX,
-      velocityY: p.velocityY + 0.5, // Gravity
-      opacity: p.opacity - 0.02,
-      scale: p.scale + 0.02,
-      rotation: p.rotation + 5
-    })).filter(p => p.opacity > 0);
-
-    setParticles([...particlesRef.current]);
-  });
-
-  const refreshServerState = async () => {
-    try {
-      const response = await fetch('/api/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initData: window.Telegram?.WebApp?.initData,
-          tapCount: 0, // فقط للحصول على التحديثات
-        }),
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        const user = data.user;
-        
-        // تنعيم الانتقال بدلاً من القفز المفاجئ
-        setServerState(prev => ({
-          coins: user.coins,
-          energy: user.energy,
-          maxEnergy: user.max_energy,
-          tapMultiplier: user.tap_multiplier,
-          tapMultiplierEndTime: user.tap_multiplier_end_time,
-          autoBotActiveUntil: user.auto_bot_active_until,
-          totalTaps: user.total_taps
-        }));
-
-        // إذا كان الفرق كبير، نصحح فوراً. إذا كان صغيراً، ننتظر الـ batch
-        const coinDiff = user.coins - localCoins;
-        if (Math.abs(coinDiff) > 100) {
-          setLocalCoins(user.coins);
-          setLocalEnergy(user.energy);
-        }
-        
-        lastServerUpdateRef.current = Date.now();
-      }
-    } catch (e) {
-      console.error('Refresh failed:', e);
-    }
-  };
-
-  const handleTap = useCallback((e: React.TouchEvent | React.MouseEvent) => {
+  // معالج اللمس المحسّن (Multi-touch)
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
     e.preventDefault();
     
-    if (localEnergy <= 0) {
-      // Vibration للخطأ
-      window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred?.('error');
-      return;
-    }
-
+    const now = Date.now();
     const container = containerRef.current;
     if (!container) return;
 
     const rect = container.getBoundingClientRect();
-    const touches = 'touches' in e ? Array.from(e.touches) : [{ clientX: (e as React.MouseEvent).clientX, clientY: (e as React.MouseEvent).clientY }];
+    const touches = Array.from(e.touches);
     
-    const now = Date.now();
-    const isMultiplierActive = serverState.tapMultiplierEndTime > now;
-    const multiplier = isMultiplierActive ? serverState.tapMultiplier : 1;
+    // ✅ Anti-Spam: منع الضغط السريع جداً
+    if (now - lastTapTimeRef.current < 30) {
+      return; // تجاهل الضغطات السريعة جداً (أقل من 30ms)
+    }
+    lastTapTimeRef.current = now;
 
+    // معالجة كل الأصابع (Multi-touch)
     touches.forEach((touch) => {
       const x = touch.clientX - rect.left;
       const y = touch.clientY - rect.top;
+      
+      // التأكد من أن اللمسة داخل المنطقة
+      if (x < 0 || x > rect.width || y < 0 || y > rect.height) return;
+
+      const isMultiplierActive = multiplierEndTime > now;
+      const multiplier = isMultiplierActive ? tapMultiplier : 1;
 
       // إرسال للـ GameState (مع Anti-Cheat)
       const accepted = gameState.addTap(x, y, multiplier);
       
       if (!accepted) return;
 
-      // تحديث محلي فوري (Optimistic)
-      setLocalCoins(prev => prev + multiplier);
-      setLocalEnergy(prev => Math.max(0, prev - 1));
-
-      // إنشاء Particle
+      // إنشاء Particle (مرئي فقط)
+      const colors = ['#facc15', '#fbbf24', '#f59e0b', '#f97316'];
+      const color = colors[Math.floor(Math.random() * colors.length)];
+      
       const particle: Particle = {
         id: particleIdRef.current++,
         x,
         y,
         value: multiplier,
-        velocityX: (Math.random() - 0.5) * 4,
-        velocityY: -8 - Math.random() * 4,
+        velocityX: (Math.random() - 0.5) * 3,
+        velocityY: -6 - Math.random() * 4,
         opacity: 1,
-        scale: 0.5,
-        rotation: Math.random() * 30 - 15
+        scale: 0.5 + Math.random() * 0.3,
+        rotation: Math.random() * 30 - 15,
+        color
       };
 
       particlesRef.current.push(particle);
-      setParticles([...particlesRef.current]);
-
-      // Haptic
+      
+      // Haptic Feedback (خفيف)
       window.Telegram?.WebApp?.HapticFeedback?.impactOccurred?.('light');
     });
-  }, [localEnergy, serverState.tapMultiplier, serverState.tapMultiplierEndTime]);
 
-  // حساب القيم النهائية للعرض
-  const displayCoins = useMemo(() => {
-    const pending = gameState.getPendingStats();
-    return localCoins + pending.pendingCoins;
-  }, [localCoins, isSyncing]);
+    // تحديث الـ particles
+    setParticles([...particlesRef.current]);
+  }, [tapMultiplier, multiplierEndTime]);
 
-  const displayEnergy = useMemo(() => {
-    const pending = gameState.getPendingStats();
-    return Math.max(0, localEnergy - pending.pendingEnergy);
-  }, [localEnergy, isSyncing]);
+  // معالج الماوس (للتطوير)
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (e.button !== 0) return; // Left click only
+    
+    const container = containerRef.current;
+    if (!container) return;
 
-  const isMultiplierActive = serverState.tapMultiplierEndTime > Date.now();
-  const isBotActive = serverState.autoBotActiveUntil > Date.now();
+    const rect = container.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    if (x < 0 || x > rect.width || y < 0 || y > rect.height) return;
+
+    const now = Date.now();
+    if (now - lastTapTimeRef.current < 30) return;
+    lastTapTimeRef.current = now;
+
+    const isMultiplierActive = multiplierEndTime > now;
+    const multiplier = isMultiplierActive ? tapMultiplier : 1;
+
+    const accepted = gameState.addTap(x, y, multiplier);
+    if (!accepted) return;
+
+    const colors = ['#facc15', '#fbbf24', '#f59e0b', '#f97316'];
+    const color = colors[Math.floor(Math.random() * colors.length)];
+    
+    const particle: Particle = {
+      id: particleIdRef.current++,
+      x,
+      y,
+      value: multiplier,
+      velocityX: (Math.random() - 0.5) * 3,
+      velocityY: -6 - Math.random() * 4,
+      opacity: 1,
+      scale: 0.5 + Math.random() * 0.3,
+      rotation: Math.random() * 30 - 15,
+      color
+    };
+
+    particlesRef.current.push(particle);
+    setParticles([...particlesRef.current]);
+  }, [tapMultiplier, multiplierEndTime]);
+
+  // حساب نسبة الطاقة
+  const energyPercent = (displayEnergy / maxEnergy) * 100;
+  const isMultiplierActive = multiplierEndTime > Date.now();
+  const isBotActive = botActiveUntil > Date.now();
+
+  // الوقت المتبقي للمضاعف
+  const multiplierTimeLeft = isMultiplierActive 
+    ? Math.ceil((multiplierEndTime - Date.now()) / 1000)
+    : 0;
 
   return (
-    <div className="flex flex-col items-center justify-between h-full w-full pt-4 pb-28 px-4 relative overflow-hidden select-none touch-none">
-      
-      {/* Background Glow */}
-      <div className="absolute top-[-10%] left-[-10%] w-[120%] h-[120%] bg-[radial-gradient(circle_at_50%_40%,_rgba(250,204,21,0.08)_0%,_transparent_60%)] pointer-events-none" />
-      
-      {/* Sponsored Banner */}
-      <div className="w-full max-w-sm bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-3 flex items-center justify-between z-20 shadow-lg cursor-pointer hover:bg-white/10 transition-colors active:scale-95">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shrink-0 shadow-inner">
-            <Sparkles size={18} className="text-white" />
-          </div>
-          <div>
-            <div className="text-[10px] text-zinc-400 font-semibold uppercase tracking-wider">Sponsored</div>
-            <div className="text-sm font-bold text-white">Daily Bonus</div>
-          </div>
-        </div>
-      </div>
+    <div 
+      ref={containerRef}
+      className="relative flex flex-col items-center justify-between h-full w-full pt-4 pb-28 px-4 overflow-hidden select-none touch-none"
+      onTouchStart={handleTouchStart}
+      onMouseDown={handleMouseDown}
+    >
+      {/* Background Effects */}
+      <div className="absolute inset-0 bg-gradient-to-b from-yellow-500/5 via-transparent to-transparent pointer-events-none" />
+      <div className="absolute top-[-20%] left-[-20%] w-[140%] h-[140%] bg-[radial-gradient(circle_at_50%_40%,_rgba(250,204,21,0.08)_0%,_transparent_60%)] pointer-events-none" />
 
-      {/* Stats */}
-      <div className="w-full flex flex-col items-center space-y-4 z-10 mt-4">
-        {/* Badges */}
-        <div className="flex gap-2 h-8 flex-wrap justify-center">
+      {/* Top Bar - إحصائيات سريعة */}
+      <div className="w-full flex justify-between items-start z-10 px-2">
+        {/* Multiplier Status */}
+        <div className="flex gap-2">
           <AnimatePresence>
             {isMultiplierActive && (
               <motion.div
-                initial={{ opacity: 0, scale: 0.8, y: 20 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.8, y: -20 }}
-                className="bg-gradient-to-r from-orange-500/20 to-red-500/20 border border-orange-500/40 text-orange-400 px-4 py-1.5 rounded-full text-xs font-bold flex items-center gap-2 shadow-[0_0_20px_rgba(249,115,22,0.3)] backdrop-blur-md"
+                initial={{ opacity: 0, scale: 0.8, x: -20 }}
+                animate={{ opacity: 1, scale: 1, x: 0 }}
+                exit={{ opacity: 0, scale: 0.8, x: -20 }}
+                className="bg-gradient-to-r from-yellow-500/20 to-orange-500/20 backdrop-blur-xl border border-yellow-500/30 rounded-xl px-3 py-1.5 flex items-center gap-2"
               >
-                <Zap size={14} className="fill-orange-400" />
-                <span>x{serverState.tapMultiplier} ACTIVE</span>
-                <span className="text-[10px] opacity-70">
-                  {Math.ceil((serverState.tapMultiplierEndTime - Date.now()) / 1000)}s
-                </span>
+                <Zap size={16} className="text-yellow-400 fill-yellow-400" />
+                <span className="text-yellow-400 font-bold text-sm">{tapMultiplier}x</span>
+                <span className="text-yellow-400/70 text-xs">{multiplierTimeLeft}s</span>
               </motion.div>
             )}
-            
+
             {isBotActive && (
               <motion.div
-                initial={{ opacity: 0, scale: 0.8, y: 20 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.8, y: -20 }}
-                className="bg-gradient-to-r from-blue-500/20 to-cyan-500/20 border border-blue-500/40 text-blue-400 px-4 py-1.5 rounded-full text-xs font-bold flex items-center gap-2 shadow-[0_0_20px_rgba(59,130,246,0.3)] backdrop-blur-md"
+                initial={{ opacity: 0, scale: 0.8, x: -20 }}
+                animate={{ opacity: 1, scale: 1, x: 0 }}
+                exit={{ opacity: 0, scale: 0.8, x: -20 }}
+                className="bg-gradient-to-r from-blue-500/20 to-cyan-500/20 backdrop-blur-xl border border-blue-500/30 rounded-xl px-3 py-1.5 flex items-center gap-2"
               >
-                <Bot size={14} />
-                <span>BOT ACTIVE</span>
+                <Bot size={16} className="text-blue-400" />
+                <span className="text-blue-400 font-bold text-sm">Auto</span>
               </motion.div>
             )}
           </AnimatePresence>
         </div>
 
-        {/* Coins Display */}
-        <div className="flex flex-col items-center justify-center gap-1">
-          <span className="text-zinc-400 text-xs font-medium uppercase tracking-widest">Total Balance</span>
-          <div className="relative">
-            <motion.h1 
-              className="text-6xl font-black text-white drop-shadow-[0_0_30px_rgba(250,204,21,0.3)] tabular-nums tracking-tight"
-              animate={isSyncing ? { opacity: [1, 0.7, 1] } : {}}
-              transition={{ duration: 0.5, repeat: isSyncing ? Infinity : 0 }}
+        {/* Sync Indicator */}
+        {isSyncing && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="bg-black/40 backdrop-blur-xl rounded-full px-3 py-1.5 flex items-center gap-2"
+          >
+            <div className="w-4 h-4 border-2 border-yellow-400 border-t-transparent rounded-full animate-spin" />
+            <span className="text-xs text-zinc-300">Syncing</span>
+          </motion.div>
+        )}
+      </div>
+
+      {/* Main Display */}
+      <div className="flex flex-col items-center z-10 mt-8">
+        <span className="text-zinc-400 text-xs font-medium uppercase tracking-widest mb-1">
+          Total Balance
+        </span>
+        
+        <div className="relative">
+          <motion.h1 
+            className="text-7xl font-black text-white drop-shadow-[0_0_30px_rgba(250,204,21,0.3)] tabular-nums tracking-tight"
+            animate={isSyncing ? { scale: [1, 1.02, 1] } : {}}
+            transition={{ duration: 0.4, repeat: isSyncing ? Infinity : 0 }}
+          >
+            {Math.floor(displayCoins).toLocaleString()}
+          </motion.h1>
+
+          {/* Pending Indicator */}
+          {gameState.getPendingStats().totalPending > 0 && (
+            <motion.div
+              initial={{ scale: 0 }}
+              animate={{ scale: 1 }}
+              className="absolute -top-2 -right-8 bg-yellow-500 text-black text-xs font-bold px-2 py-1 rounded-full"
             >
-              {Math.floor(displayCoins).toLocaleString('en-US')}
-            </motion.h1>
-            {isSyncing && (
-              <motion.div 
-                className="absolute -right-8 top-1/2 -translate-y-1/2 w-4 h-4 border-2 border-yellow-400 border-t-transparent rounded-full"
-                animate={{ rotate: 360 }}
-                transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-              />
-            )}
+              +{gameState.getPendingStats().totalPending}
+            </motion.div>
+          )}
+        </div>
+
+        {/* Stats Row */}
+        <div className="flex gap-4 mt-4 text-sm">
+          <div className="flex items-center gap-1 text-zinc-400">
+            <Gauge size={16} />
+            <span>{gameState.getState().totalTapsInSession} taps</span>
           </div>
         </div>
       </div>
 
-      {/* Tap Area */}
-      <div 
-        ref={containerRef}
-        className="relative flex-1 w-full flex items-center justify-center touch-none my-4"
-        onTouchStart={handleTap}
-        onMouseDown={handleTap}
-        style={{ touchAction: 'none' }}
-      >
-        {/* Tap Button */}
+      {/* Tap Button */}
+      <div className="relative flex-1 flex items-center justify-center my-4">
         <motion.div
-          whileTap={{ scale: 0.92, rotate: 2 }}
-          whileHover={{ scale: 1.02 }}
-          transition={{ type: "spring", stiffness: 500, damping: 15 }}
-          className="relative z-10 w-64 h-64 md:w-72 md:h-72 rounded-full cursor-pointer"
+          whileTap={{ scale: 0.92 }}
+          transition={{ type: "spring", stiffness: 400, damping: 15 }}
+          className="relative w-64 h-64 md:w-72 md:h-72 cursor-pointer"
           style={{ willChange: 'transform' }}
         >
           {/* Glow Effect */}
-          <div className="absolute inset-0 rounded-full bg-yellow-500/30 blur-3xl animate-pulse" />
+          <div className="absolute inset-0 rounded-full bg-gradient-to-br from-yellow-400/30 via-yellow-500/30 to-amber-600/30 blur-3xl animate-pulse" />
           
           {/* Main Button */}
-          <div className="relative w-full h-full rounded-full bg-gradient-to-br from-yellow-300 via-yellow-500 to-amber-600 p-1 shadow-[0_15px_50px_rgba(217,119,6,0.5),inset_0_4px_15px_rgba(255,255,255,0.5)] overflow-hidden flex items-center justify-center group">
-            
-            {/* Inner Circle */}
-            <div className="w-[92%] h-[92%] rounded-full bg-gradient-to-br from-yellow-400 to-amber-600 flex items-center justify-center shadow-[inset_0_0_30px_rgba(0,0,0,0.2)] relative overflow-hidden">
+          <div className="relative w-full h-full rounded-full bg-gradient-to-br from-yellow-400 via-yellow-500 to-amber-600 p-1 shadow-[0_20px_40px_rgba(0,0,0,0.4),inset_0_2px_10px_rgba(255,255,255,0.6)]">
+            <div className="w-full h-full rounded-full bg-gradient-to-br from-yellow-300 to-amber-500 flex items-center justify-center shadow-inner relative overflow-hidden">
               
               {/* Shine Effect */}
-              <div className="absolute inset-0 bg-gradient-to-tr from-transparent via-white/30 to-transparent -rotate-45 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700" />
+              <div className="absolute inset-0 bg-gradient-to-tr from-transparent via-white/40 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000" />
               
-              {/* Text */}
-              <span className="text-8xl font-black text-yellow-100 drop-shadow-[0_4px_8px_rgba(0,0,0,0.4)] select-none">
-                T
+              {/* Icon */}
+              <span className="text-8xl font-black text-white drop-shadow-lg select-none">
+                💎
               </span>
-            </div>
 
-            {/* Ripple Effect on Tap */}
-            <AnimatePresence>
-              {particles.slice(0, 3).map((_, i) => (
-                <motion.div
-                  key={`ripple-${i}`}
-                  initial={{ scale: 0.8, opacity: 0.5 }}
-                  animate={{ scale: 1.5, opacity: 0 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.6, delay: i * 0.1 }}
-                  className="absolute inset-0 rounded-full border-4 border-yellow-300/50"
-                />
-              ))}
-            </AnimatePresence>
+              {/* Ripple Effect على الضغط */}
+              <AnimatePresence>
+                {particles.slice(0, 2).map((_, i) => (
+                  <motion.div
+                    key={`ripple-${i}`}
+                    initial={{ scale: 0.8, opacity: 0.5 }}
+                    animate={{ scale: 1.8, opacity: 0 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.8, delay: i * 0.1 }}
+                    className="absolute inset-0 rounded-full border-4 border-white/50"
+                  />
+                ))}
+              </AnimatePresence>
+            </div>
           </div>
         </motion.div>
 
@@ -379,74 +370,59 @@ export function TapScreen() {
                 rotate: p.rotation
               }}
               className="absolute pointer-events-none z-50"
-              style={{ 
-                left: 0, 
-                top: 0,
-                willChange: 'transform, opacity'
-              }}
+              style={{ left: 0, top: 0 }}
             >
               <div className="flex flex-col items-center">
-                <span className="text-4xl font-black text-yellow-400 drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">
+                <span 
+                  className="text-3xl font-black drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]"
+                  style={{ color: p.color }}
+                >
                   +{p.value}
                 </span>
-                <motion.div
-                  initial={{ scaleX: 1 }}
-                  animate={{ scaleX: 0 }}
-                  transition={{ duration: 0.5 }}
-                  className="h-1 w-12 bg-yellow-400/50 rounded-full mt-1"
-                />
               </div>
             </motion.div>
           ))}
         </AnimatePresence>
       </div>
 
-      {/* Energy Bar */}
-      <div className="w-full max-w-sm px-4 z-10 space-y-2 mb-2">
-        <div className="flex justify-between items-end">
+      {/* Energy Bar - محسّن */}
+      <div className="w-full max-w-sm px-4 z-10 mb-4">
+        <div className="flex justify-between items-center mb-2">
           <div className="flex items-center gap-2">
             <div className="p-1.5 bg-yellow-400/20 rounded-lg">
               <Zap size={18} className="text-yellow-400 fill-yellow-400" />
             </div>
-            <div className="flex flex-col">
-              <span className="text-lg font-bold text-white tabular-nums leading-none">
-                {Math.floor(displayEnergy)}
-              </span>
-              <span className="text-[10px] text-zinc-500 font-medium">
-                / {serverState.maxEnergy} ENERGY
-              </span>
-            </div>
+            <span className="text-sm font-medium text-zinc-300">
+              Energy
+            </span>
           </div>
-          
-          {isMultiplierActive && (
-            <div className="text-[10px] text-orange-400 font-bold bg-orange-400/10 px-2 py-1 rounded-full">
-              {serverState.tapMultiplier}x BOOST
-            </div>
-          )}
+          <span className="text-sm font-bold text-white tabular-nums">
+            {Math.floor(displayEnergy)} / {maxEnergy}
+          </span>
         </div>
         
-        <div className="h-6 w-full bg-[#111] rounded-full overflow-hidden border border-white/10 p-1 shadow-inner relative">
+        <div className="h-3 bg-[#1a1a1a] rounded-full overflow-hidden border border-white/10">
           <motion.div 
-            className="h-full relative overflow-hidden rounded-full"
+            className="h-full rounded-full relative overflow-hidden"
             style={{
-              background: displayEnergy < 50 
+              background: energyPercent < 30 
                 ? 'linear-gradient(90deg, #ef4444, #f87171)' 
-                : 'linear-gradient(90deg, #ca8a04, #facc15, #fde047)'
+                : 'linear-gradient(90deg, #fbbf24, #facc15, #fde047)',
+              width: `${energyPercent}%`
             }}
             initial={false}
-            animate={{ width: `${(displayEnergy / serverState.maxEnergy) * 100}%` }}
-            transition={{ type: 'tween', ease: 'linear', duration: 0.1 }}
+            animate={{ width: `${energyPercent}%` }}
+            transition={{ type: 'spring', stiffness: 300, damping: 25 }}
           >
             {/* Shimmer */}
-            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/40 to-transparent -translate-x-full animate-[shimmer_2s_infinite]" />
-            
-            {/* Segments for visual effect */}
-            <div className="absolute inset-0 flex">
-              {[...Array(20)].map((_, i) => (
-                <div key={i} className="flex-1 border-r border-black/10" />
-              ))}
-            </div>
+            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent -translate-x-full animate-[shimmer_2s_infinite]" />
           </motion.div>
+        </div>
+
+        {/* Energy Regen Info */}
+        <div className="flex justify-between mt-1 text-[10px] text-zinc-500">
+          <span>⚡ +1 per 2s</span>
+          <span>Max in 30m</span>
         </div>
       </div>
     </div>
