@@ -1,117 +1,89 @@
 // lib/db.ts
-import type { D1Database } from '@cloudflare/workers-types';
+// ✅ متوافق مع @opennextjs/cloudflare
 
-// ❌ لا تستخدم let متغير عادي - يسبب مشاكل في Edge Runtime
-// ✅ استخدام globalThis للحفاظ على الاتصال بين الطلبات
-declare global {
-  var __D1_DB__: D1Database | undefined;
-  var __D1_CACHE_TIME__: number | undefined;
-}
+// Cache للـ DB binding
+let dbCache: any = null;
 
-interface D1Response {
-  results?: any[];
-  success: boolean;
-  meta?: any;
-}
+async function getDBBinding() {
+  if (dbCache) return dbCache;
 
-/**
- * الحصول على D1 Database binding مع دعم Cloudflare Pages
- * يعمل مع: @opennextjs/cloudflare + Cloudflare Pages
- */
-function getDB(): D1Database {
-  // 1. التحقق من التخزين المؤقت (لكن مع انتهاء صلاحية سريع)
-  const now = Date.now();
-  if (globalThis.__D1_DB__ && globalThis.__D1_CACHE_TIME__ && (now - globalThis.__D1_CACHE_TIME__ < 30000)) {
-    return globalThis.__D1_DB__;
-  }
-
-  // 2. محاولة الحصول على DB من البيئة المختلفة
-  let db: D1Database | undefined;
-
-  // الطريقة 1: process.env (الأكثر شيوعاً في Cloudflare Pages)
-  if (process.env.DB && typeof process.env.DB === 'object') {
-    db = process.env.DB as unknown as D1Database;
-  }
-  // الطريقة 2: المتغيرات العامة في Cloudflare
-  else if ((globalThis as any).DB) {
-    db = (globalThis as any).DB;
-  }
-  // الطريقة 3: Cloudflare Context (للـ Workers)
-  else {
-    try {
-      // @ts-ignore
-      const cf = (globalThis as any).cloudflare || (globalThis as any).CF_CONTEXT;
-      if (cf?.env?.DB) {
-        db = cf.env.DB;
-      }
-    } catch (e) {
-      // تجاهل الخطأ
-    }
-  }
-
-  if (!db) {
-    throw new Error(
-      "❌ Database binding 'DB' not found!\n\n" +
-      "الحلول الممكنة:\n" +
-      "1. تأكد من وجود binding في dashboard: Pages > Settings > Functions > D1 Databases\n" +
-      "2. في wrangler.toml أو pages.toml تأكد من:\n" +
-      "   [[d1_databases]]\n" +
-      "   binding = 'DB'\n" +
-      "   database_name = 'your-db'\n" +
-      "   database_id = 'your-id'\n" +
-      "3. إذا كنت تستخدم `wrangler dev`، تأكد من تشغيله بـ: `wrangler pages dev`"
-    );
-  }
-
-  // تخزين مؤقت في globalThis
-  globalThis.__D1_DB__ = db;
-  globalThis.__D1_CACHE_TIME__ = now;
-
-  return db;
-}
-
-/**
- * تنفيذ استعلام SELECT
- * ✅ متوافق 100% مع الكود القديم
- */
-export async function queryD1<T = any>(sql: string, params: any[] = []): Promise<T[]> {
-  const db = getDB();
-  
   try {
-    const stmt = db.prepare(sql).bind(...params);
-    const response = await stmt.all();
+    // ✅ الطريقة الجديدة (opennextjs-cloudflare)
+    const { getCloudflareContext } = await import('@opennextjs/cloudflare');
     
-    return (response?.results || []) as T[];
-  } catch (error: any) {
-    console.error('[D1 Query Error]', {
-      message: error.message,
-      sql: sql.substring(0, 100),
-      params
-    });
-    throw new Error(`Query failed: ${error.message}`);
+    // الحصول على الـ context بطريقة صحيحة
+    const context = await getCloudflareContext();
+    
+    // التحقق من وجود env في context
+    if (!context || !context.env) {
+      console.error('[DB] Cloudflare context or env is missing', context);
+      throw new Error('Cloudflare context not available');
+    }
+
+    // التأكد من وجود DB binding
+    if (!context.env.DB) {
+      console.error('[DB] DB binding not found in env. Available bindings:', Object.keys(context.env));
+      throw new Error('DB binding not found in Cloudflare context');
+    }
+
+    dbCache = context.env.DB;
+    console.log('[DB] Successfully connected to D1 database');
+    return dbCache;
+  } catch (e) {
+    console.error('[DB] Error getting Cloudflare context:', e);
+    
+    // Fallback للـ local dev
+    console.warn('[DB] Using fallback for local development');
+    
+    // التحقق من وجود DB في process.env
+    if (!(process.env as any).DB) {
+      console.error('[DB] No DB binding found in process.env for local development');
+      return null;
+    }
+    
+    return (process.env as any).DB;
   }
 }
 
-/**
- * تنفيذ INSERT/UPDATE/DELETE
- * ✅ متوافق 100% مع الكود القديم
- */
-export async function executeD1(
-  sql: string, 
-  params: any[] = []
-): Promise<{ 
+export async function queryD1<T = any>(sql: string, params: any[] = []): Promise<T[]> {
+  try {
+    const db = await getDBBinding();
+    
+    if (!db) {
+      throw new Error("Database binding 'DB' missing. Check: 1) Binding name in dashboard 2) wrangler.json 3) Cloudflare context");
+    }
+
+    console.log(`[DB] Executing query: ${sql.substring(0, 100)}...`);
+    
+    const stmt = db.prepare(sql).bind(...params);
+    const { results } = await stmt.all();
+    
+    return (results || []) as T[];
+  } catch (error: any) {
+    console.error(`[D1 QUERY ERROR] ${error.message}`, { 
+      sql: sql.substring(0, 100), 
+      paramsCount: params.length 
+    });
+    throw new Error(`Database query failed: ${error.message}`);
+  }
+}
+
+export async function executeD1(sql: string, params: any[] = []): Promise<{ 
   success: boolean; 
-  meta?: { 
-    changes?: number; 
-    last_row_id?: number;
-    served_by?: string;
-  };
+  meta?: { changes?: number; last_row_id?: number };
   results?: any[];
 }> {
-  const db = getDB();
-  const isSelect = sql.trim().toUpperCase().startsWith('SELECT');
-  
   try {
+    const db = await getDBBinding();
+    
+    if (!db) {
+      throw new Error("Database binding 'DB' missing. Check: 1) Binding name in dashboard 2) wrangler.json 3) Cloudflare context");
+    }
+
+    const isSelect = sql.trim().toUpperCase().startsWith('SELECT');
+    
+    console.log(`[DB] Executing ${isSelect ? 'SELECT' : 'WRITE'} query: ${sql.substring(0, 100)}...`);
+    
     const stmt = db.prepare(sql).bind(...params);
     
     if (isSelect) {
@@ -123,36 +95,27 @@ export async function executeD1(
         success: true, 
         meta: {
           changes: result.meta?.changes,
-          last_row_id: result.meta?.last_row_id,
-          served_by: result.meta?.served_by
+          last_row_id: result.meta?.last_row_id
         }
       };
     }
   } catch (error: any) {
-    console.error('[D1 Execute Error]', {
-      message: error.message,
-      sql: sql.substring(0, 100),
-      params
+    console.error(`[D1 EXECUTE ERROR] ${error.message}`, { 
+      sql: sql.substring(0, 100), 
+      paramsCount: params.length 
     });
-    throw new Error(`Execute failed: ${error.message}`);
+    throw new Error(`Database execute failed: ${error.message}`);
   }
 }
 
-/**
- * دالة مساعدة للـ Transactions (اختيارية)
- */
-export async function transactionD1<T>(queries: { sql: string; params?: any[] }[]): Promise<T[]> {
-  const db = getDB();
-  const results: T[] = [];
-  
-  // D1 doesn't support multi-statement transactions in batch yet, 
-  // but we can execute sequentially
-  for (const query of queries) {
-    const res = await executeD1(query.sql, query.params || []);
-    if (res.results) {
-      results.push(...res.results as T[]);
-    }
+// دالة مساعدة لاختبار الاتصال
+export async function testConnection(): Promise<boolean> {
+  try {
+    const result = await queryD1('SELECT 1 as test');
+    console.log('[DB] Connection test successful:', result);
+    return true;
+  } catch (error) {
+    console.error('[DB] Connection test failed:', error);
+    return false;
   }
-  
-  return results;
 }
