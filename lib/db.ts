@@ -1,25 +1,28 @@
 // lib/db.ts
-import { getRequestContext } from '@cloudflare/next-on-pages';
+// ✅ متوافق مع @opennextjs/cloudflare
 
-// Cache للـ DB binding لتحسين الأداء
+// Cache للـ DB binding
 let dbCache: any = null;
 
 async function getDBBinding() {
   if (dbCache) return dbCache;
-  
+
   try {
-    const context = getRequestContext();
-    dbCache = (context?.env as any)?.DB || (process.env as any).DB;
+    // ✅ الطريقة الجديدة (opennextjs-cloudflare)
+    const { getCloudflareContext } = await import('@opennextjs/cloudflare');
+    const context = getCloudflareContext();
+    dbCache = context.env.DB;
     return dbCache;
   } catch (e) {
-    dbCache = (process.env as any).DB;
-    return dbCache;
+    // Fallback للـ local dev
+    console.warn('[DB] Using fallback for local development');
+    return (process.env as any).DB;
   }
 }
 
 export async function queryD1<T = any>(sql: string, params: any[] = []): Promise<T[]> {
   const db = await getDBBinding();
-  if (!db) throw new Error("Database binding 'DB' missing. Check wrangler.toml or Cloudflare Dashboard.");
+  if (!db) throw new Error("Database binding 'DB' missing. Check: 1) Binding name in dashboard 2) wrangler.json");
 
   try {
     const { results } = await db.prepare(sql).bind(...params).all();
@@ -36,7 +39,7 @@ export async function executeD1(sql: string, params: any[] = []): Promise<{
   results?: any[];
 }> {
   const db = await getDBBinding();
-  if (!db) throw new Error("Database binding 'DB' missing. Check wrangler.toml or Cloudflare Dashboard.");
+  if (!db) throw new Error("Database binding 'DB' missing. Check: 1) Binding name in dashboard 2) wrangler.json");
 
   const isSelect = sql.trim().toUpperCase().startsWith('SELECT');
   
@@ -47,7 +50,6 @@ export async function executeD1(sql: string, params: any[] = []): Promise<{
       const { results } = await stmt.all();
       return { success: true, results: results || [] };
     } else {
-      // INSERT, UPDATE, DELETE, etc.
       const result = await stmt.run();
       return { 
         success: true, 
@@ -60,20 +62,5 @@ export async function executeD1(sql: string, params: any[] = []): Promise<{
   } catch (error: any) {
     console.error(`[D1 EXECUTE ERROR] ${error.message}`, { sql: sql.substring(0, 100), paramsCount: params.length });
     throw new Error(`Database execute failed: ${error.message}`);
-  }
-}
-
-// Helper للـ transactions (للاستخدام المستقبلي)
-export async function batchD1(queries: { sql: string; params: any[] }[]) {
-  const db = await getDBBinding();
-  if (!db) throw new Error("Database binding 'DB' missing");
-
-  try {
-    const statements = queries.map(q => db.prepare(q.sql).bind(...q.params));
-    const results = await db.batch(statements);
-    return results;
-  } catch (error: any) {
-    console.error(`[D1 BATCH ERROR] ${error.message}`, { queryCount: queries.length });
-    throw new Error(`Database batch failed: ${error.message}`);
   }
 }
