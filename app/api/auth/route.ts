@@ -144,7 +144,7 @@ export async function POST(req: Request) {
     const todayStr = new Date(now).toISOString().split('T')[0];
 
     // 5. Get or Create User
-    let user = await queryD1<UserRecord[]>(
+    let user: UserRecord | undefined = await queryD1<UserRecord>(
       'SELECT * FROM users WHERE telegram_id = ? LIMIT 1',
       [telegramId]
     ).then(r => r[0]);
@@ -213,7 +213,7 @@ export async function POST(req: Request) {
       }
 
       // Fetch created user
-      user = await queryD1<UserRecord[]>(
+      user = await queryD1<UserRecord>(
         'SELECT * FROM users WHERE telegram_id = ? LIMIT 1',
         [telegramId]
       ).then(r => r[0]);
@@ -236,7 +236,7 @@ export async function POST(req: Request) {
         );
 
         // Refresh user data
-        user = await queryD1<UserRecord[]>(
+        user = await queryD1<UserRecord>(
           'SELECT * FROM users WHERE telegram_id = ? LIMIT 1',
           [telegramId]
         ).then(r => r[0]);
