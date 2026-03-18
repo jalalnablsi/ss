@@ -246,11 +246,11 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
     setIsWatchingAd(true);
     const blockId = process.env.NEXT_PUBLIC_ADSGRAM_BLOCK_ID;
     
-    if (!blockId || blockId === 'test-block-id') {
-      return new Promise((resolve) => {
-        setFallbackAd({ isOpen: true, title, description, resolve });
-      }).finally(() => setIsWatchingAd(false));
-    }
+if (!blockId || blockId === '25333') {
+  return new Promise<boolean>((resolve) => { // أضفنا <boolean> هنا
+    setFallbackAd({ isOpen: true, title, description, resolve });
+  }).finally(() => setIsWatchingAd(false));
+}
 
     try {
       if (!window.Adsgram) {
