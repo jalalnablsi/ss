@@ -261,7 +261,7 @@ export async function POST(req: Request) {
         [user.referred_by]
       );
 
-      if (referrerUpdate.success) {
+     if (referrerUpdate.meta && referrerUpdate.meta.changes && referrerUpdate.meta.changes > 0) {
         referralRewarded = true;
         console.log(`[${requestId}] Referrer rewarded: ${user.referred_by}`);
       }
