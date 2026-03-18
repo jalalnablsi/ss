@@ -10,8 +10,8 @@ async function getDBBinding() {
   try {
     // ✅ الطريقة الجديدة (opennextjs-cloudflare)
     const { getCloudflareContext } = await import('@opennextjs/cloudflare');
-    const context = getCloudflareContext();
-    dbCache = context.env.DB;
+   const context = getCloudflareContext();
+    dbCache = (context.env as any).DB; 
     return dbCache;
   } catch (e) {
     // Fallback للـ local dev
