@@ -266,7 +266,7 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
     setIsWatchingAd(true);
     const blockId = process.env.NEXT_PUBLIC_ADSGRAM_BLOCK_ID;
     
-    if (!blockId || blockId === 25333) {
+    if (!blockId || blockId === "25333") {
       return new Promise<boolean>((resolve) => {
         setFallbackAd({ isOpen: true, type, resolve });
       }).finally(() => setIsWatchingAd(false));
