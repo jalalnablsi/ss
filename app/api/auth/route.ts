@@ -213,10 +213,13 @@ export async function POST(req: Request) {
       }
 
       // Fetch created user
-      user = await queryD1<UserRecord>(
+      const newUser = await queryD1<UserRecord>(
         'SELECT * FROM users WHERE telegram_id = ? LIMIT 1',
         [telegramId]
       ).then(r => r[0]);
+      
+      if (!newUser) throw new Error('Failed to fetch created user');
+      user = newUser;
 
     } else {
       // Existing User: Calculate updates
@@ -236,10 +239,12 @@ export async function POST(req: Request) {
         );
 
         // Refresh user data
-        user = await queryD1<UserRecord>(
+        const updatedUser = await queryD1<UserRecord>(
           'SELECT * FROM users WHERE telegram_id = ? LIMIT 1',
           [telegramId]
         ).then(r => r[0]);
+        
+        if (updatedUser) user = updatedUser;
       }
 
       // Reset daily ads if new day
@@ -266,10 +271,6 @@ export async function POST(req: Request) {
         user.last_name = tgUser.last_name || null;
         user.username = tgUser.username || null;
       }
-    }
-
-    if (!user) {
-      throw new Error('Failed to create or fetch user');
     }
 
     // 6. Calculate final energy (after all updates)
