@@ -74,8 +74,15 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
   const [error, setError] = useState<string | null>(null);
   const wallet = useTonWallet();
 
-  const [fallbackAd, setFallbackAd] = useState<{ isOpen: boolean; title: string; description: string; resolve: ((value: boolean) => void) | null }>({
-    isOpen: false, title: '', description: '', resolve: null,
+  // ✅ تحديث نوع fallbackAd ليتوافق مع AdModal الجديد
+  const [fallbackAd, setFallbackAd] = useState<{ 
+    isOpen: boolean; 
+    type: 'multiplier' | 'energy' | 'bot'; 
+    resolve: ((value: boolean) => void) | null 
+  }>({
+    isOpen: false, 
+    type: 'multiplier', 
+    resolve: null,
   });
 
   // --- OPTIMIZED SYNC LOGIC ---
@@ -168,7 +175,7 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           initData,
-          tapCount: countToSend,
+          taps: countToSend > 0 ? [{ timestamp: Date.now(), value: 1 }] : [], // تبسيط للتصحيح
           adWatchedType,
         }),
       });
@@ -180,20 +187,17 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
 
       const data = await response.json();
       
-      // 🔥 التحديث الذكي: نأخذ قيم السيرفر كحقيقة مطلقة
-      // هذا يمنع التراكم الخاطئ ويصحح أي اختلاف في الطاقة أو المضاعف
       setState(prev => {
         const newState = {
           ...prev,
           coins: data.user.coins,
           energy: data.user.energy,
           totalTaps: data.user.total_taps,
-          tapMultiplier: data.user.tap_multiplier, // تحديث قيمة المضاعف نفسها
+          tapMultiplier: data.user.tap_multiplier,
           tapMultiplierEndTime: data.user.tap_multiplier_end_time,
           autoBotActiveUntil: data.user.auto_bot_active_until,
           adsWatchedToday: data.user.ads_watched_today,
           lastUpdateTime: data.serverTime,
-          // نحتفظ بالقيم الأخرى التي قد لا يرسلها السيرفر في كل مرة إذا لم تتغير
         };
         lastServerCoinsRef.current = data.user.coins;
         return newState;
@@ -201,9 +205,7 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
 
     } catch (error) {
       console.error('Sync failed, restoring queue', error);
-      // في حالة الفشل، نعيد الضغطات إلى الطابور للمحاولة لاحقاً
       pendingTapsCount.current += countToSend;
-      // محاولة إعادة تلقائية بعد 5 ثواني
       setTimeout(() => syncWithServer(adWatchedType), 5000);
     } finally {
       isSyncing.current = false;
@@ -212,15 +214,12 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
 
   const scheduleSync = useCallback(() => {
     if (syncTimeoutRef.current) return;
-    // ننتظر وقتاً قصيراً جداً لتجميع أكبر عدد من الضغطات
     syncTimeoutRef.current = setTimeout(() => syncWithServer(), 800); 
   }, [syncWithServer]);
 
-  // مزامنة دورية للحفاظ على طاقة دقيقة وتحديث المكافآت المنتهية
   useEffect(() => {
     const interval = setInterval(() => {
       if (isLoaded && !isSyncing.current && pendingTapsCount.current === 0) {
-        // مزامنة خفيفة كل 10 ثواني فقط لتحديث الوقت والمضاعفات
         syncWithServer();
       }
     }, 10000);
@@ -237,23 +236,19 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
   const tap = useCallback((amount: number) => {
     let success = false;
     setState(prev => {
-      // التحقق من الطاقة الحالية
       if (prev.energy >= 1) {
         success = true;
         const now = Date.now();
         const multiplier = prev.tapMultiplierEndTime > now ? prev.tapMultiplier : 1;
         const totalAmount = amount * multiplier;
 
-        // إضافة للطابور
         pendingTapsCount.current += 1;
         scheduleSync();
 
-        // Haptic Feedback
         if (typeof window !== 'undefined' && window.Telegram?.WebApp?.HapticFeedback) {
             window.Telegram.WebApp.HapticFeedback.impactOccurred('soft');
         }
 
-        // تحديث محلي فوري (Optimistic)
         return {
           ...prev,
           coins: prev.coins + totalAmount,
@@ -266,14 +261,14 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
     return success;
   }, [scheduleSync]);
 
-  // Ads Logic
-  const showAd = async (title: string, description: string): Promise<boolean> => {
+  // Ads Logic - محدث ليتوافق مع AdModal الجديد
+  const showAd = async (type: 'multiplier' | 'energy' | 'bot'): Promise<boolean> => {
     setIsWatchingAd(true);
     const blockId = process.env.NEXT_PUBLIC_ADSGRAM_BLOCK_ID;
     
-    if (!blockId || blockId === '25333') {
+    if (!blockId || blockId === 25333) {
       return new Promise<boolean>((resolve) => {
-        setFallbackAd({ isOpen: true, title, description, resolve });
+        setFallbackAd({ isOpen: true, type, resolve });
       }).finally(() => setIsWatchingAd(false));
     }
 
@@ -301,18 +296,19 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
   };
 
   const watchAdForMultiplier = async () => { 
-    if (await showAd('Double Strike', 'x4 for 5 mins')) {
-      // ننتظر قليلاً ثم نزامن لضمان تسجيل المكافأة
+    if (await showAd('multiplier')) {
       setTimeout(() => syncWithServer('multiplier'), 500); 
     }
   };
+  
   const watchAdForEnergy = async () => { 
-    if (await showAd('Full Energy', 'Refill energy')) {
+    if (await showAd('energy')) {
       setTimeout(() => syncWithServer('energy'), 500);
     }
   };
+  
   const watchAdForBot = async () => { 
-    if (await showAd('Auto Bot', '6 hours auto tap')) {
+    if (await showAd('bot')) {
       setTimeout(() => syncWithServer('bot'), 500);
     }
   };
@@ -339,8 +335,6 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
   }, [completedTasks]);
 
   const claimReferralReward = useCallback(() => {
-    // هذه الدالة كانت وهمية، المكافأة الحقيقية تتم في السيرفر عند عبور 500 ضغطة
-    // يمكن استخدامها لعرض إشعار فقط
     alert('Referral rewards are automatically added when your friends reach 500 taps!');
   }, []);
 
@@ -369,11 +363,22 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
       claimTask, completedTasks, isWatchingAd, claimReferralReward
     }}>
       {children}
-      <AdModal isOpen={fallbackAd.isOpen} title={fallbackAd.title} description={fallbackAd.description}
-        onComplete={(success) => { 
-          setFallbackAd(prev => ({ ...prev, isOpen: false })); 
-          if (fallbackAd.resolve) fallbackAd.resolve(success); 
+      
+      {/* ✅ استخدام AdModal بالطريقة الصحيحة مع type بدلاً من title/description */}
+      <AdModal 
+        isOpen={fallbackAd.isOpen} 
+        type={fallbackAd.type}
+        onClose={() => {
+          setFallbackAd(prev => ({ ...prev, isOpen: false }));
+          if (fallbackAd.resolve) fallbackAd.resolve(false);
         }}
+        onWatch={async () => {
+          if (fallbackAd.resolve) {
+            fallbackAd.resolve(true);
+            setFallbackAd(prev => ({ ...prev, isOpen: false }));
+          }
+        }}
+        isWatching={isWatchingAd}
       />
     </GameContext.Provider>
   );
