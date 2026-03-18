@@ -1,191 +1,89 @@
-import { NextResponse } from 'next/server';
-import { queryD1, executeD1 } from '@/lib/db';
+import { executeD1 } from '@/lib/db';
 import { validateTelegramWebAppData, parseInitData } from '@/lib/telegram';
+import { NextRequest, NextResponse } from 'next/server';
 
-// Rate Limiting - 20 طلب في الثانية كحد أقصى
-const rateLimits = new Map<string, { count: number; resetTime: number }>();
+export const runtime = 'edge'; // ضروري جداً للأداء الأقصى على Cloudflare
 
-function checkRateLimit(telegramId: string): boolean {
-  const now = Date.now();
-  const windowMs = 1000; // ثانية واحدة
-  const maxRequests = 20; // 20 طلب كحد أقصى في الثانية
-
-  const current = rateLimits.get(telegramId);
-
-  if (!current || now > current.resetTime) {
-    rateLimits.set(telegramId, { count: 1, resetTime: now + windowMs });
-    return true;
-  }
-
-  if (current.count >= maxRequests) {
-    return false;
-  }
-
-  current.count++;
-  return true;
-}
-
-export async function POST(req: Request) {
-  const requestId = crypto.randomUUID().slice(0, 4);
-  const startTime = performance.now();
-
+export async function POST(req: NextRequest) {
   try {
     const { initData, taps, clientTime } = await req.json();
 
-    // التحقق الأساسي
-    if (!initData) {
-      return NextResponse.json({ error: 'No initData' }, { status: 400 });
-    }
-
-    if (!taps || typeof taps !== 'number' || taps <= 0 || taps > 50) {
-      return NextResponse.json({ error: 'Invalid taps' }, { status: 400 });
-    }
-
-    // التحقق من Telegram
+    // 1. التحقق من أمان البيانات (منع التزوير)
     const isValid = await validateTelegramWebAppData(initData);
     if (!isValid) {
-      return NextResponse.json({ error: 'Invalid' }, { status: 403 });
+      return NextResponse.json({ error: 'Unauthorized Signature' }, { status: 401 });
     }
 
-    // استخراج المستخدم
     const tgUser = parseInitData(initData);
-    if (!tgUser?.id) {
-      return NextResponse.json({ error: 'No user' }, { status: 400 });
+    if (!tgUser || !tgUser.id) {
+      return NextResponse.json({ error: 'Invalid User Data' }, { status: 400 });
     }
 
-    const telegramId = tgUser.id.toString();
-
-    // Rate Limiting
-    if (!checkRateLimit(telegramId)) {
-      return NextResponse.json({ error: 'Too fast' }, { status: 429 });
-    }
-
-    // جلب المستخدم
-    const users = await queryD1('SELECT * FROM users WHERE telegram_id = ?', [telegramId]);
-    const user = users[0];
+    const userId = tgUser.id;
+    const username = tgUser.username || 'joker_player';
     
-    if (!user) {
-      return NextResponse.json({ error: 'User not found' }, { status: 404 });
+    // استخراج كود الإحالة من start_param إذا وجد
+    const urlParams = new URLSearchParams(initData);
+    const referrerId = urlParams.get('start_param');
+
+    /**
+     * 2. الضربة القاضية لهلاك الداتا بيز: Atomic Upsert
+     * - INSERT أو UPDATE في طلب واحد.
+     * - إضافة النقرات (coins) بدلاً من استبدالها.
+     * - خصم الطاقة بناءً على عدد النقرات الفعلي.
+     * - التعامل مع الإحالات (Referral) فقط عند إنشاء الحساب لأول مرة.
+     */
+    const syncSql = `
+      INSERT INTO users (id, username, coins, energy, referred_by, last_sync)
+      VALUES (?, ?, ?, 500, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        username = excluded.username,
+        coins = coins + excluded.coins,
+        energy = MAX(0, energy - ?),
+        last_sync = excluded.last_sync
+      RETURNING *;
+    `;
+
+    // تنفيذ الاستعلام الرئيسي
+    const result = await executeD1(syncSql, [
+      userId,
+      username,
+      taps,          // العملات المكتسبة في هذه الجلسة
+      referrerId,    // يُسجل فقط إذا كان المستخدم جديداً
+      Date.now(),
+      taps           // الطاقة المخصومة (تساوي عدد النقرات)
+    ]);
+
+    const user = result.results?.[0];
+
+    // 3. منطق مكافأة الإحالة (تتم مرة واحدة فقط عند نجاح الـ Insert الجديد)
+    // إذا كان result.meta.changes > 0 وكان هناك referrerId
+    if (result.meta?.last_row_id && referrerId && referrerId !== userId.toString()) {
+       // إضافة 5000 عملة للشخص الذي دعا المستخدم الجديد
+       await executeD1(
+         `UPDATE users SET coins = coins + 5000 WHERE id = ?`,
+         [referrerId]
+       );
     }
 
-    const now = Date.now();
-
-    // حساب استعادة الطاقة
-    const timePassedSec = Math.floor((now - user.last_update_time) / 1000);
-    const regenRate = user.max_energy / 1800; // 30 دقيقة كاملة
-    const recoveredEnergy = Math.floor(timePassedSec * regenRate);
-    const currentEnergy = Math.min(user.max_energy, user.energy + recoveredEnergy);
-
-    // التحقق من الطاقة
-    if (currentEnergy < taps) {
-      // إذا الطاقة مش كافية، نكتفي باللي موجود
-      const availableTaps = currentEnergy;
-      
-      // حساب المكسب
-      const isMultiplierActive = user.tap_multiplier_end_time > now;
-      const multiplier = isMultiplierActive ? user.tap_multiplier : 1;
-      const earned = availableTaps * multiplier;
-
-      // تحديث المستخدم
-      await executeD1(
-        `UPDATE users SET 
-          coins = coins + ?,
-          challenge_coins = challenge_coins + ?,
-          energy = 0,
-          total_taps = total_taps + ?,
-          last_update_time = ?
-        WHERE telegram_id = ?`,
-        [earned, earned, availableTaps, now, telegramId]
-      );
-
-      // جلب البيانات المحدثة
-      const updated = await queryD1('SELECT * FROM users WHERE telegram_id = ?', [telegramId]);
-
-      return NextResponse.json({
-        user: {
-          coins: updated[0].coins,
-          energy: 0,
-          max_energy: updated[0].max_energy,
-          tap_multiplier: updated[0].tap_multiplier,
-          tap_multiplier_end_time: updated[0].tap_multiplier_end_time,
-          auto_bot_active_until: updated[0].auto_bot_active_until
-        },
-        serverTime: now,
-        meta: {
-          processed: availableTaps,
-          earned,
-          fullEnergy: false
-        }
-      });
-    }
-
-    // الطاقة كافية
-    const isMultiplierActive = user.tap_multiplier_end_time > now;
-    const multiplier = isMultiplierActive ? user.tap_multiplier : 1;
-    const earned = taps * multiplier;
-
-    // تحديث المستخدم
-    await executeD1(
-      `UPDATE users SET 
-        coins = coins + ?,
-        challenge_coins = challenge_coins + ?,
-        energy = ?,
-        total_taps = total_taps + ?,
-        last_update_time = ?
-      WHERE telegram_id = ?`,
-      [earned, earned, currentEnergy - taps, taps, now, telegramId]
-    );
-
-    // التحقق من مكافأة الإحالة (500 ضغطة) - بدون مشكلة TypeScript
-    if (user.total_taps < 500 && user.total_taps + taps >= 500 && user.referred_by) {
-      try {
-        const result = await executeD1(
-          `UPDATE users 
-           SET coins = coins + 1500,
-               challenge_coins = COALESCE(challenge_coins, 0) + 1500,
-               referrals_activated = referrals_activated + 1
-           WHERE telegram_id = ?`,
-          [user.referred_by]
-        );
-        
-        // ✅ هنا المشكلة كانت - هذا السطر معدل وآمن
-        if (result && result.meta && typeof result.meta.changes === 'number' && result.meta.changes > 0) {
-          console.log(`[${requestId}] Referral rewarded: ${user.referred_by}`);
-        }
-      } catch (e) {
-        console.error(`[${requestId}] Referral error:`, e);
-      }
-    }
-
-    // جلب البيانات المحدثة
-    const updated = await queryD1('SELECT * FROM users WHERE telegram_id = ?', [telegramId]);
-
-    const duration = performance.now() - startTime;
-    console.log(`[${requestId}] ${taps} taps, ${duration.toFixed(0)}ms`);
-
+    // 4. إرجاع البيانات المحدثة للفرونت اند للمزامنة
     return NextResponse.json({
+      success: true,
       user: {
-        coins: updated[0].coins,
-        energy: updated[0].energy,
-        max_energy: updated[0].max_energy,
-        tap_multiplier: updated[0].tap_multiplier,
-        tap_multiplier_end_time: updated[0].tap_multiplier_end_time,
-        auto_bot_active_until: updated[0].auto_bot_active_until
-      },
-      serverTime: now,
-      meta: {
-        processed: taps,
-        earned,
-        fullEnergy: true
+        coins: user.coins,
+        energy: user.energy,
+        max_energy: 500,
+        tap_multiplier: user.tap_multiplier || 1,
+        tap_multiplier_end_time: user.tap_multiplier_end_time || 0,
+        auto_bot_active_until: user.auto_bot_active_until || 0
       }
     });
 
-  } catch (error) {
-    console.error('Sync error:', error);
-    return NextResponse.json({ error: 'Server error' }, { status: 500 });
+  } catch (error: any) {
+    console.error('[SYNC_ERROR]:', error.message);
+    return NextResponse.json({ 
+      error: 'Internal Server Error',
+      details: error.message 
+    }, { status: 500 });
   }
-}
-
-export async function GET() {
-  return NextResponse.json({ status: 'ok' });
 }
