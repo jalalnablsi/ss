@@ -1,49 +1,64 @@
+// lib/telegram.ts
 import crypto from 'crypto';
 
 export function validateTelegramWebAppData(initData: string): boolean {
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  
   if (!botToken) {
-    console.warn('TELEGRAM_BOT_TOKEN is not set. Skipping validation for development.');
-    // In a real production app, you would return false here if the token is missing.
-    // However, to allow the user to test without setting it up immediately, we might return true.
-    // BUT the user explicitly requested "production stage, no fake data, protect from bots".
-    // So we MUST return false if the token is missing.
+    console.error('❌ TELEGRAM_BOT_TOKEN is missing');
     return false;
   }
 
   try {
     const urlParams = new URLSearchParams(initData);
     const hash = urlParams.get('hash');
+    
     if (!hash) return false;
 
     urlParams.delete('hash');
-    urlParams.sort();
-
+    
+    // ترتيب المفاتيح أبجدياً (شرط تليجرام)
+    const keys = Array.from(urlParams.keys()).sort();
+    
     let dataCheckString = '';
-    for (const [key, value] of urlParams.entries()) {
-      dataCheckString += `${key}=${value}\n`;
+    for (const key of keys) {
+      dataCheckString += `${key}=${urlParams.get(key)}\n`;
     }
-    dataCheckString = dataCheckString.slice(0, -1); // Remove last newline
+    // إزالة السطر الأخير
+    dataCheckString = dataCheckString.slice(0, -1);
 
+    // إنشاء المفتاح السري
     const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
+    
+    // حساب الهاش
     const calculatedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
 
     return calculatedHash === hash;
   } catch (error) {
-    console.error('Error validating Telegram data:', error);
+    console.error('❌ Error in validateTelegramWebAppData:', error);
     return false;
   }
 }
 
-export function parseInitData(initData: string) {
+export function parseInitData(initData: string): any | null {
   try {
     const urlParams = new URLSearchParams(initData);
     const userStr = urlParams.get('user');
-    if (userStr) {
-      return JSON.parse(userStr);
+    
+    if (!userStr) return null;
+    
+    // ملاحظة: تليجرام يرسل user كـ JSON مشفر URI أحياناً
+    // نحاول فك التشفير أولاً ثم التحليل
+    let decodedUserStr = userStr;
+    try {
+      decodedUserStr = decodeURIComponent(userStr);
+    } catch (e) {
+      // إذا فشل فك التشفير، نجرب النص الأصلي
     }
-  } catch (e) {
-    console.error('Error parsing user data:', e);
+
+    return JSON.parse(decodedUserStr);
+  } catch (error) {
+    console.error('❌ Error in parseInitData:', error);
+    return null;
   }
-  return null;
 }
