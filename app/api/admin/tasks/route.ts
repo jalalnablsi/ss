@@ -1,8 +1,7 @@
-
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { queryD1, executeD1 } from '@/lib/db';
-
+import crypto from 'crypto';
 
 // Middleware to check admin session
 async function isAdmin() {
