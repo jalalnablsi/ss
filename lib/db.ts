@@ -1,207 +1,188 @@
 // lib/db.ts
-// ✅ متوافق مع @opennextjs/cloudflare
+// ✅ متوافق مع @opennextjs/cloudflare و HTTP API
 
-// Cache للـ DB binding
 let dbCache: any = null;
 
-/**
- * الحصول على اتصال قاعدة البيانات من Cloudflare context
- */
 async function getDBBinding() {
-  // إذا كان موجود في الكاش، نرجعه مباشرة
   if (dbCache) return dbCache;
 
   try {
-    // محاولة الحصول على context من Cloudflare
     const { getCloudflareContext } = await import('@opennextjs/cloudflare');
-    
-    // استخدام any لتجنب مشاكل TypeScript
     const context: any = await getCloudflareContext();
     
-    // التحقق من وجود context و env
-    if (!context || !context.env) {
-      console.warn('[DB] Cloudflare context not available, trying fallback...');
-      return getFallbackBinding();
-    }
-
-    // التحقق من وجود DB binding
-    if (!context.env.DB) {
-      console.warn('[DB] DB binding not found in Cloudflare context, available keys:', 
-        Object.keys(context.env).join(', '));
-      return getFallbackBinding();
-    }
-
-    // حفظ في الكاش والرجوع
-    dbCache = context.env.DB;
-    console.log('[DB] Successfully connected to Cloudflare D1');
-    return dbCache;
-
-  } catch (error) {
-    console.warn('[DB] Error getting Cloudflare context:', error);
-    return getFallbackBinding();
-  }
-}
-
-/**
- * Fallback للتطوير المحلي
- */
-function getFallbackBinding() {
-  // في بيئة التطوير، نحاول من process.env
-  if (process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test') {
-    console.log('[DB] Using local development fallback');
-    
-    // إذا كان هناك DB في process.env
-    if ((process.env as any).DB) {
-      dbCache = (process.env as any).DB;
+    if (context && context.env && context.env.DB) {
+      dbCache = context.env.DB;
+      console.log('[DB] Successfully connected to Cloudflare D1 via binding');
       return dbCache;
     }
-    
-    // إذا كنا في بيئة محلية ولا يوجد DB، نرجع null
-    console.warn('[DB] No database binding available in development mode');
-    return null;
+  } catch (error) {
+    // Ignore, fallback to HTTP API
   }
-  
-  // في الإنتاج، هذا خطأ حقيقي
-  console.error('[DB] No database binding available in production');
+
   return null;
 }
 
-/**
- * تنفيذ استعلام SELECT وإرجاع النتائج
- * @param sql استعلام SQL
- * @param params المعاملات
- * @returns مصفوفة من النتائج
- */
 export async function queryD1<T = any>(sql: string, params: any[] = []): Promise<T[]> {
   const db = await getDBBinding();
   
-  if (!db) {
-    console.error('[DB] Database binding missing - check Cloudflare D1 configuration');
-    throw new Error("Database binding 'DB' missing. Please check:");
+  if (db) {
+    try {
+      const stmt = db.prepare(sql).bind(...params);
+      const { results } = await stmt.all();
+      return (results || []) as T[];
+    } catch (error: any) {
+      console.error('[D1 BINDING QUERY ERROR]', error);
+      throw error;
+    }
   }
 
+  // Fallback to HTTP API
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+  const databaseId = process.env.CLOUDFLARE_DATABASE_ID;
+  const apiToken = process.env.CLOUDFLARE_API_TOKEN;
+
+  if (!accountId || !databaseId || !apiToken) {
+    console.warn('[DB] Missing Cloudflare credentials for HTTP API fallback');
+    return [];
+  }
+
+  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${databaseId}/query`;
+  
   try {
-    console.log(`[DB] Executing query: ${sql.substring(0, 100)}...`);
-    
-    const stmt = db.prepare(sql).bind(...params);
-    const { results } = await stmt.all();
-    
-    return (results || []) as T[];
-  } catch (error: any) {
-    console.error('[D1 QUERY ERROR]', {
-      message: error?.message || 'Unknown error',
-      sql: sql.substring(0, 200),
-      paramsCount: params.length
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ sql, params }),
     });
-    throw new Error(`Database query failed: ${error?.message || 'Unknown error'}`);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Cloudflare API Error: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json();
+    if (!data.success) {
+      throw new Error(`D1 Query Error: ${JSON.stringify(data.errors)}`);
+    }
+
+    return (data.result[0]?.results || []) as T[];
+  } catch (error) {
+    console.error('[D1 HTTP QUERY ERROR]', error);
+    throw error;
   }
 }
 
-/**
- * تنفيذ استعلامات الكتابة (INSERT, UPDATE, DELETE) أو SELECT
- * @param sql استعلام SQL
- * @param params المعاملات
- * @returns نتيجة التنفيذ
- */
 export async function executeD1(sql: string, params: any[] = []): Promise<{ 
   success: boolean; 
   meta?: { changes?: number; last_row_id?: number };
   results?: any[];
 }> {
   const db = await getDBBinding();
-  
-  if (!db) {
-    console.error('[DB] Database binding missing - check Cloudflare D1 configuration');
-    throw new Error("Database binding 'DB' missing. Please check:");
-  }
-
-  // تحديد نوع الاستعلام
   const isSelect = sql.trim().toUpperCase().startsWith('SELECT');
   
+  if (db) {
+    try {
+      const stmt = db.prepare(sql).bind(...params);
+      if (isSelect) {
+        const { results } = await stmt.all();
+        return { success: true, results: results || [] };
+      } else {
+        const result = await stmt.run();
+        return { 
+          success: true, 
+          meta: {
+            changes: result.meta?.changes || 0,
+            last_row_id: result.meta?.last_row_id || 0
+          }
+        };
+      }
+    } catch (error: any) {
+      console.error('[D1 BINDING EXECUTE ERROR]', error);
+      throw error;
+    }
+  }
+
+  // Fallback to HTTP API
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+  const databaseId = process.env.CLOUDFLARE_DATABASE_ID;
+  const apiToken = process.env.CLOUDFLARE_API_TOKEN;
+
+  if (!accountId || !databaseId || !apiToken) {
+    throw new Error('Missing Cloudflare credentials for HTTP API fallback');
+  }
+
+  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${databaseId}/query`;
+  
   try {
-    console.log(`[DB] Executing ${isSelect ? 'SELECT' : 'WRITE'}: ${sql.substring(0, 100)}...`);
-    
-    const stmt = db.prepare(sql).bind(...params);
-    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ sql, params }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Cloudflare API Error: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json();
+    if (!data.success) {
+      throw new Error(`D1 Execute Error: ${JSON.stringify(data.errors)}`);
+    }
+
+    const result = data.result[0];
     if (isSelect) {
-      const { results } = await stmt.all();
-      return { 
-        success: true, 
-        results: results || [] 
-      };
+      return { success: true, results: result?.results || [] };
     } else {
-      const result = await stmt.run();
-      return { 
-        success: true, 
+      return {
+        success: true,
         meta: {
-          changes: result.meta?.changes || 0,
-          last_row_id: result.meta?.last_row_id || 0
+          changes: result?.meta?.changes || 0,
+          last_row_id: result?.meta?.last_row_id || 0
         }
       };
     }
-  } catch (error: any) {
-    console.error('[D1 EXECUTE ERROR]', {
-      message: error?.message || 'Unknown error',
-      sql: sql.substring(0, 200),
-      paramsCount: params.length
-    });
-    throw new Error(`Database execute failed: ${error?.message || 'Unknown error'}`);
+  } catch (error) {
+    console.error('[D1 HTTP EXECUTE ERROR]', error);
+    throw error;
   }
 }
 
-/**
- * اختبار الاتصال بقاعدة البيانات
- * @returns boolean
- */
 export async function testConnection(): Promise<boolean> {
   try {
-    const result = await queryD1<{ test: number }>('SELECT 1 as test');
-    console.log('[DB] Connection test successful:', result);
+    await queryD1('SELECT 1 as test');
     return true;
   } catch (error) {
-    console.error('[DB] Connection test failed:', error);
     return false;
   }
 }
 
-/**
- * تنفيذ معاملة (Transaction) - لعمليات متعددة
- * @param queries مصفوفة من الاستعلامات
- * @returns النتائج
- */
 export async function transactionD1(queries: { sql: string; params: any[] }[]): Promise<any[]> {
-  const db = await getDBBinding();
-  
-  if (!db) {
-    throw new Error("Database binding 'DB' missing");
-  }
-
   const results = [];
-  
-  try {
-    // D1 لا يدعم المعاملات الحقيقية، لكن ننفذ بالتسلسل
-    for (const query of queries) {
-      const stmt = db.prepare(query.sql).bind(...query.params);
-      
-      if (query.sql.trim().toUpperCase().startsWith('SELECT')) {
-        const { results: rows } = await stmt.all();
-        results.push(rows);
-      } else {
-        const result = await stmt.run();
-        results.push(result);
-      }
+  for (const query of queries) {
+    const isSelect = query.sql.trim().toUpperCase().startsWith('SELECT');
+    if (isSelect) {
+      const rows = await queryD1(query.sql, query.params);
+      results.push(rows);
+    } else {
+      const res = await executeD1(query.sql, query.params);
+      results.push(res);
     }
-    
-    return results;
-  } catch (error: any) {
-    console.error('[D1 TRANSACTION ERROR]', error);
-    throw new Error(`Transaction failed: ${error.message}`);
   }
+  return results;
 }
 
-export default {
+const db = {
   query: queryD1,
   execute: executeD1,
   test: testConnection,
   transaction: transactionD1
 };
+
+export default db;
