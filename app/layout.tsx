@@ -3,11 +3,19 @@
 import { Outfit } from 'next/font/google';
 import Script from 'next/script';
 import { TonConnectUIProvider } from '@tonconnect/ui-react';
+import { useEffect, useState } from 'react';
 import './globals.css'; // Global styles
 
 const outfit = Outfit({ subsets: ['latin'], variable: '--font-outfit' });
 
 export default function RootLayout({children}: {children: React.ReactNode}) {
+  const [manifestUrl, setManifestUrl] = useState('');
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setManifestUrl(`${window.location.origin}/api/tonconnect-manifest.json`);
+  }, []);
+
   return (
     <html lang="en" className={`${outfit.variable} dark`} suppressHydrationWarning>
       <head>
@@ -20,9 +28,15 @@ export default function RootLayout({children}: {children: React.ReactNode}) {
         <Script src="https://sad.adsgram.ai/js/sad.min.js" strategy="beforeInteractive" />
       </head>
       <body className="bg-[#050505] text-white font-outfit antialiased select-none touch-manipulation overflow-hidden overscroll-none" suppressHydrationWarning>
-        <TonConnectUIProvider manifestUrl="https://tap-to-earn-demo.vercel.app/tonconnect-manifest.json">
-          {children}
-        </TonConnectUIProvider>
+        {manifestUrl ? (
+          <TonConnectUIProvider manifestUrl={manifestUrl}>
+            {children}
+          </TonConnectUIProvider>
+        ) : (
+          <div className="min-h-screen bg-[#050505] flex items-center justify-center">
+            <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+          </div>
+        )}
       </body>
     </html>
   );
