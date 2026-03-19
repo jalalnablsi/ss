@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useGame } from './GameProvider';
-import { Users, Copy, CheckCircle2, Gift, Share2, MessageCircle, Instagram, Send } from 'lucide-react';
+import { Users, Copy, CheckCircle2, Gift, Share2, MessageCircle, Send } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface TelegramUser {
@@ -69,9 +69,11 @@ export function FriendsScreen() {
     }
   };
 
-  const handleNativeShare = async () => {
+  // ✅ إصلاح: زر المشاركة يعمل دائماً
+  const handleShare = async () => {
     if (!inviteLink) return;
 
+    // محاولة استخدام Web Share API أولاً
     if (navigator.share) {
       try {
         await navigator.share({
@@ -79,12 +81,18 @@ export function FriendsScreen() {
           text: shareText,
           url: inviteLink,
         });
+        return; // نجاح المشاركة، نخرج من الدالة
       } catch (err) {
-        if ((err as Error).name !== 'AbortError') {
-          console.error('Share failed:', err);
+        // إذا ألغى المستخدم أو فشلت المشاركة، نكمل للطريقة البديلة
+        if ((err as Error).name === 'AbortError') {
+          return; // المستخدم ألغى المشاركة
         }
+        console.log('Web Share API failed, trying fallback');
       }
     }
+
+    // ✅ الطريقة البديلة: فتح Telegram share مباشرة
+    shareToTelegram();
   };
 
   const shareToTelegram = () => {
@@ -97,15 +105,6 @@ export function FriendsScreen() {
     if (!inviteLink) return;
     const url = `https://wa.me/?text=${encodeURIComponent(shareText + '\n\n' + inviteLink)}`;
     window.open(url, '_blank');
-  };
-
-  const shareToInstagram = () => {
-    if (!inviteLink) return;
-    handleCopy();
-    window.location.href = 'instagram://app';
-    setTimeout(() => {
-      alert('Link copied! Paste it in your Instagram story or messages');
-    }, 500);
   };
 
   if (isLoading) {
@@ -156,7 +155,7 @@ export function FriendsScreen() {
         </div>
         <div className="bg-gradient-to-br from-yellow-500/10 to-yellow-500/5 border border-yellow-500/20 rounded-2xl p-4 text-center">
           <div className="text-zinc-400 text-xs font-bold uppercase tracking-wider mb-1">Earned</div>
-          <div className="text-2xl font-black text-yellow-400">{referralCoinsEarned.toLocaleString()}</div>
+          <div className="text-2xl font-black text-yellow-400">{referralCoinsEarned.toLocaleString('en-US')}</div>
         </div>
       </div>
 
@@ -221,9 +220,9 @@ export function FriendsScreen() {
           </button>
         </div>
 
-        {/* Main Share Button */}
+        {/* ✅ إصلاح: زر المشاركة الرئيسي يعمل الآن */}
         <button 
-          onClick={handleNativeShare}
+          onClick={handleShare}
           disabled={!inviteLink}
           className="w-full py-4 rounded-2xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-lg shadow-indigo-500/25 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.98] transition-all"
         >
@@ -231,8 +230,8 @@ export function FriendsScreen() {
           Share Link
         </button>
 
-        {/* Social Share Buttons */}
-        <div className="grid grid-cols-3 gap-3">
+        {/* ✅ تعديل: عمودان فقط (Telegram و WhatsApp) */}
+        <div className="grid grid-cols-2 gap-3">
           <button
             onClick={shareToTelegram}
             disabled={!inviteLink}
@@ -249,15 +248,6 @@ export function FriendsScreen() {
           >
             <MessageCircle size={20} />
             <span className="text-xs">WhatsApp</span>
-          </button>
-
-          <button
-            onClick={shareToInstagram}
-            disabled={!inviteLink}
-            className="py-3 rounded-xl bg-gradient-to-br from-purple-600/20 to-pink-600/20 border border-pink-500/30 text-pink-400 font-semibold flex flex-col items-center gap-1 hover:from-purple-600/30 hover:to-pink-600/30 disabled:opacity-50 disabled:cursor-not-allowed transition-colors active:scale-95"
-          >
-            <Instagram size={20} />
-            <span className="text-xs">Instagram</span>
           </button>
         </div>
       </div>
