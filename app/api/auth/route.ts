@@ -45,8 +45,8 @@ const authRateLimits = new Map<string, { count: number; resetTime: number }>();
 
 function checkAuthRateLimit(identifier: string): boolean {
   const now = Date.now();
-  const windowMs = 60000; // 1 minute
-  const maxRequests = 10; // 10 auth requests per minute max
+  const windowMs = 60000;
+  const maxRequests = 10;
 
   const current = authRateLimits.get(identifier);
 
@@ -68,7 +68,7 @@ function calculateEnergyRegen(user: UserRecord, now: number): number {
   const timePassedSec = (now - user.last_update_time) / 1000;
   if (timePassedSec <= 0) return user.energy;
 
-  const regenRate = user.max_energy / 1800; // Full in 30 minutes
+  const regenRate = user.max_energy / 1800;
   const recoveredEnergy = timePassedSec * regenRate;
   return Math.min(user.max_energy, user.energy + recoveredEnergy);
 }
@@ -81,7 +81,7 @@ function calculateBotEarnings(user: UserRecord, now: number): number {
   
   if (activeSeconds <= 0) return 0;
 
-  const rate = 0.5; // 0.5 coin per second
+  const rate = 0.5;
   return activeSeconds * rate;
 }
 
@@ -102,7 +102,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const { initData, referralCode } = body;
+    const { initData } = body;
 
     if (!initData || typeof initData !== 'string') {
       return NextResponse.json(
@@ -143,7 +143,20 @@ export async function POST(req: Request) {
     const now = Date.now();
     const todayStr = new Date(now).toISOString().split('T')[0];
 
-    // 5. Get or Create User
+    // 5. Extract Referral Code from start_param (for Mini Apps)
+    // Telegram WebApp sends start_param when user opens via invite link
+    let referralCode: string | null = null;
+    try {
+      const urlParams = new URLSearchParams(initData);
+      const startParam = urlParams.get('start_param');
+      if (startParam) {
+        referralCode = startParam;
+      }
+    } catch (e) {
+      console.error(`[${requestId}] Error parsing start_param:`, e);
+    }
+
+    // 6. Get or Create User
     let user: UserRecord | undefined = await queryD1<UserRecord>(
       'SELECT * FROM users WHERE telegram_id = ? LIMIT 1',
       [telegramId]
@@ -156,6 +169,9 @@ export async function POST(req: Request) {
       // Create New User
       isNewUser = true;
       const id = crypto.randomUUID();
+
+      // Validate referral code - prevent self-referral
+      const validReferralCode = referralCode && referralCode !== telegramId ? referralCode : null;
 
       await executeD1(
         `INSERT INTO users (
@@ -177,36 +193,36 @@ export async function POST(req: Request) {
           tgUser.first_name || '',
           tgUser.last_name || null,
           tgUser.username || null,
-          0, // coins
-          0, // challenge_coins
-          500, // energy
-          500, // max_energy
-          0, // total_taps
-          1, // tap_multiplier
-          0, // tap_multiplier_end_time
-          0, // auto_bot_active_until
-          0, // ads_watched_today
-          todayStr, // last_ad_watch_date
-          now, // last_update_time
-          0, // wallet_connected
-          null, // wallet_address
-          0, // referrals_count
-          0, // referrals_activated
-          0, // referral_coins_earned
-          referralCode && referralCode !== telegramId ? referralCode : null, // referred_by
-          '[]', // completed_tasks
-          new Date(now).toISOString() // created_at
+          0,
+          0,
+          500,
+          500,
+          0,
+          1,
+          0,
+          0,
+          0,
+          todayStr,
+          now,
+          0,
+          null,
+          0,
+          0,
+          0,
+          validReferralCode,
+          '[]',
+          new Date(now).toISOString()
         ]
       );
 
       // Process referral for new user
-      if (referralCode && referralCode !== telegramId) {
+      if (validReferralCode) {
         try {
           await executeD1(
             `UPDATE users SET referrals_count = referrals_count + 1 WHERE telegram_id = ?`,
-            [referralCode]
+            [validReferralCode]
           );
-          console.log(`[${requestId}] Referral recorded: ${referralCode} invited ${telegramId}`);
+          console.log(`[${requestId}] Referral recorded: ${validReferralCode} invited ${telegramId}`);
         } catch (err) {
           console.error(`[${requestId}] Failed to record referral:`, err);
         }
@@ -226,7 +242,6 @@ export async function POST(req: Request) {
       const currentEnergy = calculateEnergyRegen(user, now);
       botEarnings = calculateBotEarnings(user, now);
 
-      // Update user with regenerated energy and bot earnings
       if (currentEnergy !== user.energy || botEarnings > 0) {
         await executeD1(
           `UPDATE users SET 
@@ -238,7 +253,6 @@ export async function POST(req: Request) {
           [currentEnergy, botEarnings, botEarnings, now, telegramId]
         );
 
-        // Refresh user data
         const updatedUser = await queryD1<UserRecord>(
           'SELECT * FROM users WHERE telegram_id = ? LIMIT 1',
           [telegramId]
@@ -273,14 +287,11 @@ export async function POST(req: Request) {
       }
     }
 
-    // 6. Calculate final energy (after all updates)
     const finalEnergy = calculateEnergyRegen(user, now);
 
-    // 7. Fetch Adsgram Block ID from settings
     const settings = await queryD1<{key: string, value: string}>('SELECT * FROM settings WHERE key = ?', ['adsgram_block_id']);
     const adsgramBlockId = settings.length > 0 ? settings[0].value : '';
 
-    // 8. Build Response
     const duration = Math.round(performance.now() - startTime);
     console.log(`[${requestId}] Auth ${isNewUser ? 'created' : 'success'} for ${telegramId} in ${duration}ms`);
 
