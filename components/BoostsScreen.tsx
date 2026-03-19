@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useGame } from './GameProvider';
-import { Zap, BatteryCharging, Bot, PlaySquare, Loader2, Coins } from 'lucide-react';
+import { Zap, BatteryCharging, Bot, PlaySquare, Loader2, Coins, Clock } from 'lucide-react';
 
 export function BoostsScreen() {
   const { 
@@ -13,7 +13,9 @@ export function BoostsScreen() {
     autoBotActiveUntil,
     adsWatchedToday,
     isWatchingAd,
-    tapMultiplier
+    tapMultiplier,
+    energy,
+    maxEnergy
   } = useGame();
 
   const [loadingBoostId, setLoadingBoostId] = useState<string | null>(null);
@@ -26,6 +28,7 @@ export function BoostsScreen() {
 
   const isMultiplierActive = tapMultiplierEndTime > now;
   const isBotActive = autoBotActiveUntil > now;
+  const isEnergyFull = energy >= maxEnergy;
 
   const formatTimeLeft = (endTime: number) => {
     const diff = Math.max(0, endTime - now);
@@ -51,44 +54,54 @@ export function BoostsScreen() {
     {
       id: 'multiplier',
       title: 'Quad Strike (x4)',
-      description: 'Get 4x coins for every tap for 5 minutes.',
-      rewardText: '+1000 Coins & x4 Multiplier',
+      description: 'اضرب أرباحك 4 مرات لمدة 5 دقائق. +1000 عملة فورية!',
+      subDescription: 'يمنحك ميزة الضرب 4 للنقر + مكافأة نقدية.',
       icon: <Zap size={28} className="text-orange-400" />,
       color: 'from-orange-500/20 to-red-500/20',
       borderColor: 'border-orange-500/30',
       action: watchAdForMultiplier,
       isActive: isMultiplierActive,
-      statusText: isMultiplierActive ? `Active (${formatTimeLeft(tapMultiplierEndTime)})` : 'Available',
-      buttonText: isMultiplierActive ? 'Running...' : 'Watch Ad',
-      disabled: isMultiplierActive || isWatchingAd, // FIX: Disabled while active
+      statusText: isMultiplierActive ? `نشط (${formatTimeLeft(tapMultiplierEndTime)})` : 'متاح',
+      buttonText: isMultiplierActive ? 'جاري العمل...' : 'شاهد الإعلان',
+      disabled: isMultiplierActive || isWatchingAd,
+      // ✅ توضيح المكافآت بشكل منفصل
+      instantReward: '+1000 Coins',
+      bonusReward: 'x4 Taps لمدة 5 دقائق',
+      rewardIcon: <Zap size={12} className="text-orange-400" />
     },
     {
       id: 'energy',
       title: 'Full Energy Refill',
-      description: 'Instantly restore energy to max capacity.',
-      rewardText: '+1000 Coins & Full Energy',
+      description: 'استعد طاقتك كاملة فوراً. +1000 عملة فورية!',
+      subDescription: 'يمتلئ شريط الطاقة إلى 500 + مكافأة نقدية.',
       icon: <BatteryCharging size={28} className="text-green-400" />,
       color: 'from-green-500/20 to-emerald-500/20',
       borderColor: 'border-green-500/30',
       action: watchAdForEnergy,
       isActive: false,
-      statusText: 'Available',
-      buttonText: 'Watch Ad',
-      disabled: isWatchingAd,
+      statusText: isEnergyFull ? 'الطاقة ممتلئة' : 'متاح',
+      buttonText: 'شاهد الإعلان',
+      disabled: isEnergyFull || isWatchingAd,
+      instantReward: '+1000 Coins',
+      bonusReward: 'طاقة كاملة فورية',
+      rewardIcon: <BatteryCharging size={12} className="text-green-400" />
     },
     {
       id: 'autobot',
       title: 'Auto-Tap Bot',
-      description: 'Collects coins automatically for 6 hours (even offline).',
-      rewardText: '+1000 Coins & 6h Bot',
+      description: 'يعمل البوت تلقائياً لمدة 6 ساعات. +1000 عملة فورية!',
+      subDescription: 'اجمع العملات حتى وأنت خارج التطبيق.',
       icon: <Bot size={28} className="text-blue-400" />,
       color: 'from-blue-500/20 to-cyan-500/20',
       borderColor: 'border-blue-500/30',
       action: watchAdForBot,
       isActive: isBotActive,
-      statusText: isBotActive ? `Active (${formatHoursLeft(autoBotActiveUntil)})` : `${adsWatchedToday}/3 Daily Ads`,
-      buttonText: isBotActive ? 'Running...' : 'Watch Ad',
-      disabled: isBotActive || isWatchingAd, // FIX: Disabled while active
+      statusText: isBotActive ? `نشط (${formatHoursLeft(autoBotActiveUntil)})` : `${adsWatchedToday}/3 إعلانات يومية`,
+      buttonText: isBotActive ? 'جاري العمل...' : 'شاهد الإعلان',
+      disabled: isBotActive || isWatchingAd,
+      instantReward: '+1000 Coins',
+      bonusReward: 'بوت تلقائي لمدة 6 ساعات',
+      rewardIcon: <Bot size={12} className="text-blue-400" />
     }
   ];
 
@@ -96,7 +109,7 @@ export function BoostsScreen() {
     <div className="w-full h-full pb-28 pt-8 px-5 overflow-y-auto">
       <div className="text-center mb-10">
         <h2 className="text-4xl font-black text-white mb-3 tracking-tight">Boosts</h2>
-        <p className="text-zinc-400 text-sm">Watch ads to unlock powerful features and earn instant coins!</p>
+        <p className="text-zinc-400 text-sm">شاهد إعلانات قصيرة واحصل على مكافآت فورية وميزات قوية!</p>
       </div>
 
       <div className="space-y-5">
@@ -107,7 +120,7 @@ export function BoostsScreen() {
           return (
             <div 
               key={boost.id}
-              className={`bg-white/5 backdrop-blur-xl border ${boost.borderColor} rounded-3xl p-5 flex flex-col gap-4 relative overflow-hidden shadow-lg transition-all duration-300 ${isDisabled ? 'opacity-75 grayscale-[0.5]' : 'hover:bg-white/[0.07]'}`}
+              className={`bg-white/5 backdrop-blur-xl border ${boost.borderColor} rounded-3xl p-5 flex flex-col gap-4 relative overflow-hidden shadow-lg transition-all duration-300 ${isDisabled ? 'opacity-90' : 'hover:bg-white/[0.07]'}`}
             >
               <div className={`absolute -top-10 -right-10 w-40 h-40 bg-gradient-to-br ${boost.color} blur-3xl opacity-40 pointer-events-none`} />
               
@@ -125,11 +138,29 @@ export function BoostsScreen() {
                   <p className="text-sm text-zinc-300 leading-relaxed font-medium">
                     {boost.description}
                   </p>
+                  <p className="text-xs text-zinc-500 mt-1">
+                    {boost.subDescription}
+                  </p>
                   
-                  {/* FIX 4: Clear Reward Display */}
-                  <div className="mt-3 inline-flex items-center gap-1.5 bg-yellow-500/10 border border-yellow-500/20 px-2.5 py-1.5 rounded-lg">
-                    <Coins size={14} className="text-yellow-400" />
-                    <span className="text-xs font-bold text-yellow-400">{boost.rewardText}</span>
+                  {/* ✅ عرض المكافآت بشكل منفصل وواضح */}
+                  <div className="mt-4 space-y-2">
+                    {/* المكافأة الفورية */}
+                    <div className="flex items-center gap-2 bg-yellow-500/10 border border-yellow-500/20 px-3 py-2 rounded-lg">
+                      <Coins size={14} className="text-yellow-400" />
+                      <div className="flex flex-col">
+                        <span className="text-[10px] text-yellow-400 font-bold uppercase">مكافأة فورية</span>
+                        <span className="text-xs text-yellow-300 font-semibold">{boost.instantReward}</span>
+                      </div>
+                    </div>
+                    
+                    {/* المكافأة الإضافية */}
+                    <div className="flex items-center gap-2 bg-white/5 border border-white/10 px-3 py-2 rounded-lg">
+                      {boost.rewardIcon}
+                      <div className="flex flex-col">
+                        <span className="text-[10px] text-zinc-400 font-bold uppercase">مكافأة إضافية</span>
+                        <span className="text-xs text-zinc-200 font-semibold">{boost.bonusReward}</span>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -146,9 +177,9 @@ export function BoostsScreen() {
                 {isLoading ? (
                   <Loader2 size={18} className="animate-spin" />
                 ) : (
-                  !isDisabled && <PlaySquare size={18} />
+                  !boost.disabled && <PlaySquare size={18} />
                 )}
-                {isLoading ? 'Loading...' : boost.buttonText}
+                {isLoading ? 'جاري التحميل...' : boost.buttonText}
               </button>
             </div>
           );
