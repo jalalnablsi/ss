@@ -86,7 +86,6 @@ export async function POST(req: Request) {
     const user = users[0];
 
     if (!user) {
-      // إذا المستخدم غير موجود، نطلب منه إعادة التشغيل ليقوم API auth بإنشائه
       return NextResponse.json({ error: 'User not found. Please restart the app.', code: 'USER_NOT_FOUND' }, { status: 404 });
     }
 
@@ -117,11 +116,15 @@ export async function POST(req: Request) {
     }
 
     // 5. Process Taps (Server-Side Validation)
+    // ✅ تم تعريف المتغيرات هنا لتكون متاحة في كامل الدالة (إصلاح خطأ البناء)
+    let processedTapsCount = 0; 
+    let maxTapsAllowed = 0;
+
     if (taps && Array.isArray(taps) && taps.length > 0) {
-      // Anti-Cheat: Max 15 taps per second buffer
       const timeDiffSec = (now - user.last_update_time) / 1000;
-      const maxTapsAllowed = Math.floor(timeDiffSec * 15) + 15; 
+      maxTapsAllowed = Math.floor(timeDiffSec * 15) + 15; 
       const tapsToProcess = Math.min(taps.length, maxTapsAllowed);
+      processedTapsCount = tapsToProcess; // حفظ العدد للمرجعية
 
       for (let i = 0; i < tapsToProcess; i++) {
         if (newEnergy >= 1) {
@@ -145,15 +148,14 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: 'Daily ad limit reached (30/30)', code: 'LIMIT_REACHED' }, { status: 429 });
       }
 
-      // Check Cooldown (30 seconds) - Optional but recommended
+      // Check Cooldown (30 seconds) - Optional logic kept simple
       const lastAdTimestamp = newLastAdWatchDate && !isNaN(Date.parse(newLastAdWatchDate)) 
         ? new Date(newLastAdWatchDate).getTime() 
         : (parseInt(newLastAdWatchDate) || 0);
       
-      // إذا كان التاريخ نصاً قديماً (timestamp string) نحوله
       const timeSinceLastAd = now - (lastAdTimestamp || 0);
       if (timeSinceLastAd < 30000 && lastAdTimestamp !== 0) {
-         // يمكن تفعيل هذا السطر إذا أردت فرض الانتظار 30 ثانية بدقة
+         // يمكن تفعيل السطر التالي لفرض الانتظار بدقة
          // return NextResponse.json({ error: 'Please wait before watching another ad', code: 'COOLDOWN' }, { status: 429 });
       }
 
@@ -251,7 +253,7 @@ export async function POST(req: Request) {
       meta: {
         botEarnings,
         energyRecovered: newEnergy - user.energy,
-        processedTaps: taps ? Math.min(taps.length, maxTapsAllowed) : 0
+        processedTaps: processedTapsCount // ✅ استخدام المتغير المعرف مسبقاً
       }
     });
 
