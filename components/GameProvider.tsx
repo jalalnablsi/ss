@@ -5,7 +5,7 @@ import { AdModal } from './AdModal';
 import { Loader2, AlertCircle } from 'lucide-react';
 import { useTonWallet } from '@tonconnect/ui-react';
 
-// Telegram WebApp global type definition
+// Types
 declare global {
   interface Window {
     Telegram?: {
@@ -99,7 +99,6 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
   const [error, setError] = useState<string | null>(null);
   const wallet = useTonWallet();
 
-  // Fallback Ad Modal State
   const [fallbackAd, setFallbackAd] = useState<{
     isOpen: boolean;
     title: string;
@@ -112,16 +111,20 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
     resolve: null,
   });
 
-  // --- ANTI-CHEAT & SUPABASE SYNC QUEUE ---
+  // Anti-cheat & Sync Queue
   const tapQueue = useRef<{ t: number; a: number }[]>([]);
   const isSyncing = useRef(false);
+  
+  // FIX 1: Strict Tap Debounce Ref
+  const lastTapTimeRef = useRef<number>(0);
 
-  // Initialize Telegram WebApp and Authenticate
+  // Initialize Telegram & Auth
   useEffect(() => {
     const initApp = async () => {
       try {
+        // Security Check: Must run inside Telegram WebApp in production
         if (typeof window === 'undefined' || !window.Telegram?.WebApp) {
-          setError('Please open this app inside Telegram.');
+          setError('Access denied. Please open this app directly inside Telegram.');
           return;
         }
 
@@ -134,7 +137,7 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
         const referralCode = webApp.initDataUnsafe.start_param;
 
         if (!user || !initData) {
-          setError('Failed to authenticate with Telegram. Please restart the app.');
+          setError('Authentication failed. Invalid Telegram data.');
           return;
         }
 
@@ -147,13 +150,13 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
 
         if (!response.ok) {
           const errData = await response.json();
-          setError(errData.error || 'Failed to connect to server.');
+          setError(errData.error || 'Server connection failed.');
           return;
         }
 
         const data = await response.json();
         
-        // Map backend user to frontend state
+        // Update State from Server
         setState({
           coins: data.user.coins,
           challengeCoins: data.user.challengeCoins || 0,
@@ -175,18 +178,18 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
         });
         
         setCompletedTasks(data.user.completedTasks || []);
-
         setIsLoaded(true);
+
       } catch (err) {
         console.error('Init error:', err);
-        setError('An unexpected error occurred during initialization.');
+        setError('System error. Please restart Telegram.');
       }
     };
 
     initApp();
   }, []);
 
-  const syncWithSupabase = useCallback(async (adWatchedType?: string) => {
+  const syncWithServer = useCallback(async (adWatchedType?: string) => {
     if (!isLoaded || (tapQueue.current.length === 0 && !adWatchedType) || isSyncing.current) return;
     isSyncing.current = true;
 
@@ -195,7 +198,7 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
 
     try {
       const initData = window.Telegram?.WebApp?.initData;
-      if (!initData) throw new Error('No initData');
+      if (!initData) throw new Error('No initData available');
 
       const response = await fetch('/api/sync', {
         method: 'POST',
@@ -211,7 +214,7 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
 
       const data = await response.json();
       
-      // Update state with server truth
+      // Update state with server truth to prevent drift
       setState(prev => ({
         ...prev,
         coins: data.user.coins,
@@ -227,67 +230,20 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
 
     } catch (error) {
       console.error('Sync failed, restoring queue', error);
+      // Restore queue on failure to retry later
       tapQueue.current = [...tapsToSync, ...tapQueue.current];
     } finally {
       isSyncing.current = false;
     }
   }, [isLoaded]);
 
-  // Periodic Sync
+  // Periodic Sync every 5 seconds
   useEffect(() => {
-    const interval = setInterval(() => syncWithSupabase(), 10000); // Increased to 10s to reduce DB load
+    const interval = setInterval(() => syncWithServer(), 5000);
     return () => clearInterval(interval);
-  }, [syncWithSupabase]);
+  }, [syncWithServer]);
 
-  // Handle TON Wallet Connection Reward
-  useEffect(() => {
-    const handleWalletConnect = async () => {
-      if (isLoaded && wallet && !state.walletConnected) {
-        // Optimistic UI update
-        setState(prev => ({
-          ...prev,
-          walletConnected: true,
-          walletAddress: wallet.account.address,
-        }));
-        
-        // Claim task on backend
-        try {
-          const initData = window.Telegram?.WebApp?.initData;
-          if (initData && !completedTasks.includes('connect_wallet')) {
-            const response = await fetch('/api/tasks', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ initData, taskId: 'connect_wallet' }),
-            });
-            
-            if (response.ok) {
-              const data = await response.json();
-              setCompletedTasks(data.user.completed_tasks || []);
-              setState(prev => ({
-                ...prev,
-                coins: data.user.coins,
-                challengeCoins: data.user.challenge_coins || 0,
-                walletConnected: true,
-                walletAddress: wallet.account.address,
-              }));
-            }
-          }
-        } catch (e) {
-          console.error('Failed to claim wallet reward', e);
-        }
-      } else if (isLoaded && !wallet && state.walletConnected) {
-        setState(prev => ({
-          ...prev,
-          walletConnected: false,
-          walletAddress: null,
-        }));
-      }
-    };
-
-    handleWalletConnect();
-  }, [wallet, isLoaded, state.walletConnected, completedTasks]);
-
-  // Client-side optimistic updates (Energy regen & Bot earnings)
+  // Client-side Logic: Energy Regen & Bot Earnings
   useEffect(() => {
     if (!isLoaded) return;
 
@@ -298,54 +254,66 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
         let newCoins = prev.coins;
         let newChallengeCoins = prev.challengeCoins;
         
+        // Energy Regen
         const timePassedSec = Math.max(0, (now - prev.lastUpdateTime) / 1000);
-        const energyToAdd = timePassedSec * (prev.maxEnergy / 1800);
-        
         if (prev.energy < prev.maxEnergy) {
-          newEnergy = Math.min(prev.maxEnergy, prev.energy + energyToAdd);
+          const regenRate = prev.maxEnergy / 1800; // Full in 30 mins
+          const recovered = timePassedSec * regenRate;
+          newEnergy = Math.min(prev.maxEnergy, prev.energy + recovered);
         }
 
+        // Bot Earnings
         if (prev.autoBotActiveUntil > now) {
           const botEarnings = timePassedSec * 0.5;
           newCoins += botEarnings;
           newChallengeCoins += botEarnings;
         }
 
+        // Check Multiplier Expiry
         let newMultiplier = prev.tapMultiplier;
-        if (prev.tapMultiplierEndTime > 0 && prev.tapMultiplierEndTime < now) {
+        if (prev.tapMultiplierEndTime > 0 && prev.tapMultiplierEndTime <= now) {
           newMultiplier = 1;
         }
 
-        return {
-          ...prev,
-          coins: newCoins,
-          challengeCoins: newChallengeCoins,
-          energy: newEnergy,
-          tapMultiplier: newMultiplier,
-          lastUpdateTime: now,
-        };
+        // Only update if something changed to save renders
+        if (newEnergy !== prev.energy || newCoins !== prev.coins || newMultiplier !== prev.tapMultiplier) {
+          return {
+            ...prev,
+            coins: newCoins,
+            challengeCoins: newChallengeCoins,
+            energy: newEnergy,
+            tapMultiplier: newMultiplier,
+            lastUpdateTime: now,
+          };
+        }
+        return prev;
       });
     }, 1000);
 
     return () => clearInterval(interval);
   }, [isLoaded]);
 
-  const [lastTapTime, setLastTapTime] = useState(0);
-
+  // FIX 1: Robust Tap Function with Debounce
   const tap = useCallback((amount: number) => {
     const now = Date.now();
-    if (now - lastTapTime < 60) {
-      return false; // Anti-cheat: Max ~15 taps per second
+    
+    // Prevent double taps within 50ms (Anti-cheat & UX fix)
+    if (now - lastTapTimeRef.current < 50) {
+      return false;
     }
-    setLastTapTime(now);
 
     let success = false;
+
     setState(prev => {
       if (prev.energy >= 1) {
         success = true;
-        const multiplier = prev.tapMultiplierEndTime > now ? prev.tapMultiplier : 1;
+        lastTapTimeRef.current = now; // Update last tap time only on success
+
+        const isMultiplierActive = prev.tapMultiplierEndTime > now;
+        const multiplier = isMultiplierActive ? prev.tapMultiplier : 1;
         const totalAmount = amount * multiplier;
         
+        // Queue for server sync
         tapQueue.current.push({ t: now, a: totalAmount });
 
         return {
@@ -354,28 +322,32 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
           challengeCoins: prev.challengeCoins + totalAmount,
           energy: prev.energy - 1,
           totalTaps: prev.totalTaps + 1,
-          lastUpdateTime: now,
+          // Do not update lastUpdateTime here to avoid resetting regen logic immediately
         };
       }
       return prev;
     });
+
     return success;
-  }, [lastTapTime]);
+  }, []);
 
   const showAd = async (title: string, description: string): Promise<boolean> => {
     setIsWatchingAd(true);
     try {
       if (window.Adsgram) {
-        const blockId = state.adsgramBlockId || process.env.NEXT_PUBLIC_ADSGRAM_BLOCK_ID || 'test-block-id';
+        const blockId = state.adsgramBlockId || process.env.NEXT_PUBLIC_ADSGRAM_BLOCK_ID || '';
+        if (!blockId) throw new Error('Adsgram Block ID missing');
+        
         const AdController = window.Adsgram.init({ blockId });
         try {
           await AdController.show();
           return true;
         } catch (e) {
-          console.error("Adsgram error or user skipped", e);
+          console.error("Adsgram skipped or error", e);
           return false;
         }
       } else {
+        // Fallback for testing without Adsgram integration
         return new Promise((resolve) => {
           setFallbackAd({
             isOpen: true,
@@ -390,30 +362,57 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
     }
   };
 
+  // FIX 2 & 3: Optimistic Updates & Disable Logic
   const watchAdForMultiplier = async () => {
-    const success = await showAd('Quad Strike (x4)', 'Watch this ad to get x4 multiplier for 5 minutes.');
+    // Prevent action if already active
+    if (state.tapMultiplierEndTime > Date.now()) return;
+
+    const success = await showAd('Quad Strike (x4)', 'Watch ad to get x4 multiplier for 5 mins + 1000 Coins!');
     if (success) {
-      await syncWithSupabase('multiplier');
+      const now = Date.now();
+      // Immediate Local Update (No Refresh needed)
+      setState(prev => ({
+        ...prev,
+        tapMultiplier: 4,
+        tapMultiplierEndTime: now + 5 * 60 * 1000,
+        coins: prev.coins + 1000,
+        challengeCoins: prev.challengeCoins + 1000
+      }));
+      // Sync to DB
+      await syncWithServer('multiplier');
     }
   };
 
   const watchAdForEnergy = async () => {
-    const success = await showAd('Full Energy Refill', 'Watch this ad to instantly restore your energy.');
+    if (state.energy >= state.maxEnergy) return;
+    const success = await showAd('Full Energy', 'Watch ad to refill energy + 1000 Coins!');
     if (success) {
-      await syncWithSupabase('energy');
+      setState(prev => ({
+        ...prev,
+        energy: prev.maxEnergy,
+        coins: prev.coins + 1000,
+        challengeCoins: prev.challengeCoins + 1000
+      }));
+      await syncWithServer('energy');
     }
   };
 
   const watchAdForBot = async () => {
-    const success = await showAd('Auto-Tap Bot', 'Watch this ad to activate or progress the Auto-Bot.');
+    const success = await showAd('Auto-Bot', 'Watch ad to activate bot for 6h + 1000 Coins!');
     if (success) {
-      await syncWithSupabase('bot');
+      const now = Date.now();
+      setState(prev => ({
+        ...prev,
+        autoBotActiveUntil: now + 6 * 60 * 60 * 1000,
+        coins: prev.coins + 1000,
+        challengeCoins: prev.challengeCoins + 1000
+      }));
+      await syncWithServer('bot');
     }
   };
 
   const claimTask = useCallback(async (reward: number, taskId: string) => {
     if (completedTasks.includes(taskId)) return;
-    
     try {
       const initData = window.Telegram?.WebApp?.initData;
       if (!initData) return;
@@ -432,8 +431,6 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
           coins: data.user.coins,
           challengeCoins: data.user.challenge_coins || 0,
         }));
-      } else {
-        console.error('Failed to claim task');
       }
     } catch (e) {
       console.error('Task claim error:', e);
@@ -447,7 +444,6 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
       challengeCoins: prev.challengeCoins + 1500,
       referralCoinsEarned: prev.referralCoinsEarned + 1500,
     }));
-    // In a real app, send this to a dedicated /api/referrals endpoint
   }, []);
 
   if (error) {
@@ -456,7 +452,7 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
         <AlertCircle className="text-red-500 mb-4" size={64} />
         <h1 className="text-2xl font-bold mb-2">Access Denied</h1>
         <p className="text-zinc-400">{error}</p>
-        <p className="text-zinc-500 text-sm mt-8">Production Mode Active</p>
+        <p className="text-zinc-600 text-xs mt-8">Secure Production Mode</p>
       </div>
     );
   }
