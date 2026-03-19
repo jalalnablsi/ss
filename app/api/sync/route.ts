@@ -81,7 +81,7 @@ export async function POST(req: Request) {
     const now = Date.now();
     const todayStr = new Date(now).toISOString().split('T')[0];
 
-    // 3. Fetch User from DB (Use Transaction logic conceptually here)
+    // 3. Fetch User from DB
     const users = await queryD1('SELECT * FROM users WHERE telegram_id = ?', [telegramId]);
     const user = users[0];
 
@@ -127,15 +127,13 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: 'Daily ad limit reached', code: 'LIMIT_REACHED' }, { status: 429 });
       }
 
-      // Security: Simple Cooldown Check (Optional but recommended)
-      // Prevent spamming ad requests within 2 seconds
+      // Security: Simple Cooldown Check (2 seconds)
       const lastAdTimestamp = newLastAdWatchDate && !isNaN(Date.parse(newLastAdWatchDate)) 
         ? new Date(newLastAdWatchDate).getTime() 
         : 0;
       
       if (now - lastAdTimestamp < 2000 && lastAdTimestamp !== 0) {
-         // Allow it but log warning, or reject strictly depending on your policy
-         // For now, we proceed but ensure we don't double count if logic fails
+         // Cooldown active but we proceed with warning
       }
 
       newAdsWatchedToday += 1;
@@ -235,7 +233,7 @@ export async function POST(req: Request) {
     `, [
       newCoins, 
       newChallengeCoins, 
-      currentEnergy, // Use the calculated energy
+      currentEnergy, 
       newTotalTaps,
       newTapMultiplier, 
       newTapMultiplierEndTime, 
