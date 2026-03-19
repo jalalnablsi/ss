@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useGame } from './GameProvider';
 import { Zap, BatteryCharging, Bot, PlaySquare, Loader2 } from 'lucide-react';
 
@@ -16,19 +16,25 @@ export function BoostsScreen() {
   } = useGame();
 
   const [loadingBoostId, setLoadingBoostId] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
 
-  const isMultiplierActive = tapMultiplierEndTime > Date.now();
-  const isBotActive = autoBotActiveUntil > Date.now();
+  useEffect(() => {
+    const interval = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const isMultiplierActive = tapMultiplierEndTime > now;
+  const isBotActive = autoBotActiveUntil > now;
 
   const formatTimeLeft = (endTime: number) => {
-    const diff = Math.max(0, endTime - Date.now());
+    const diff = Math.max(0, endTime - now);
     const minutes = Math.floor(diff / 60000);
     const seconds = Math.floor((diff % 60000) / 1000);
     return `${minutes}:${seconds.toString().padStart(2, '0')}`;
   };
 
   const formatHoursLeft = (endTime: number) => {
-    const diff = Math.max(0, endTime - Date.now());
+    const diff = Math.max(0, endTime - now);
     const hours = Math.floor(diff / 3600000);
     const minutes = Math.floor((diff % 3600000) / 60000);
     return `${hours}h ${minutes}m`;
@@ -43,15 +49,16 @@ export function BoostsScreen() {
   const boosts = [
     {
       id: 'multiplier',
-      title: 'Double Strike (x2)',
-      description: 'Get double coins for every tap for the next 5 minutes.',
+      title: 'Quad Strike (x4)',
+      description: 'Get 4x coins for every tap for the next 5 minutes.',
       icon: <Zap size={28} className="text-orange-400" />,
       color: 'from-orange-500/20 to-red-500/20',
       borderColor: 'border-orange-500/30',
       action: watchAdForMultiplier,
       isActive: isMultiplierActive,
       statusText: isMultiplierActive ? `Active (${formatTimeLeft(tapMultiplierEndTime)})` : 'Available',
-      buttonText: 'Watch Ad',
+      buttonText: isMultiplierActive ? 'Running' : 'Watch Ad',
+      disabled: isMultiplierActive,
     },
     {
       id: 'energy',
