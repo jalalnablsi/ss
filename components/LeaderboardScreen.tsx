@@ -22,7 +22,7 @@ interface ActiveChallenge {
 }
 
 export function LeaderboardScreen() {
-  const { coins } = useGame();
+  const { coins, challengeCoins } = useGame();
   const [period, setPeriod] = useState<LeaderboardPeriod>('all_time');
   const [leaderboard, setLeaderboard] = useState<LeaderboardUser[]>([]);
   const [activeChallenge, setActiveChallenge] = useState<ActiveChallenge | null>(null);
@@ -82,11 +82,11 @@ export function LeaderboardScreen() {
   
   // If not in top 50, append them at the bottom with a mock rank (or real rank if we had it)
   const displayList = [...leaderboard];
-  if (!currentUserInTop50 && currentUserId && period === 'all_time') {
+  if (!currentUserInTop50 && currentUserId) {
     displayList.push({
       id: currentUserId,
       name: 'You',
-      coins: coins,
+      coins: period === 'challenge' ? challengeCoins : coins,
       rank: 999, // Placeholder rank
     });
   }
@@ -107,44 +107,42 @@ export function LeaderboardScreen() {
         <p className="text-zinc-400 text-sm">Top players around the world</p>
       </div>
 
-      {/* Segmented Control */}
-      <div className="flex p-1 bg-white/5 border border-white/10 rounded-2xl mb-6">
-        <button
-          onClick={() => setPeriod('all_time')}
-          className={`flex-1 py-2 rounded-xl text-sm font-bold transition-all ${period === 'all_time' ? 'bg-white text-black shadow-md' : 'text-zinc-400 hover:text-white'}`}
-        >
-          All Time
-        </button>
-        <button
-          onClick={() => setPeriod('challenge')}
-          className={`flex-1 py-2 rounded-xl text-sm font-bold transition-all ${period === 'challenge' ? 'bg-white text-black shadow-md' : 'text-zinc-400 hover:text-white'}`}
-        >
-          Active Challenge
-        </button>
-      </div>
-
-      {period === 'challenge' && activeChallenge && (
-        <div className="mb-6 p-4 rounded-2xl bg-gradient-to-r from-orange-500/20 to-red-500/20 border border-orange-500/30 flex items-center justify-between">
-          <div>
-            <h3 className="text-white font-bold text-lg">{activeChallenge.title}</h3>
-            <p className="text-orange-200 text-sm">Earn coins to climb the ranks!</p>
+      {/* Segmented Control - Only show if there is an active challenge */}
+      {activeChallenge && (
+        <>
+          <div className="flex p-1 bg-white/5 border border-white/10 rounded-2xl mb-6">
+            <button
+              onClick={() => setPeriod('all_time')}
+              className={`flex-1 py-2 rounded-xl text-sm font-bold transition-all ${period === 'all_time' ? 'bg-white text-black shadow-md' : 'text-zinc-400 hover:text-white'}`}
+            >
+              All Time
+            </button>
+            <button
+              onClick={() => setPeriod('challenge')}
+              className={`flex-1 py-2 rounded-xl text-sm font-bold transition-all ${period === 'challenge' ? 'bg-white text-black shadow-md' : 'text-zinc-400 hover:text-white'}`}
+            >
+              Active Challenge
+            </button>
           </div>
-          <div className="text-right">
-            <div className="flex items-center gap-1 text-orange-400 mb-1 justify-end">
-              <Timer size={16} />
-              <span className="text-xs font-bold uppercase tracking-wider">Ends In</span>
-            </div>
-            <div className="text-white font-mono font-bold text-lg tabular-nums">
-              {timeLeft}
-            </div>
-          </div>
-        </div>
-      )}
 
-      {period === 'challenge' && !activeChallenge && !isLoading && (
-        <div className="mb-6 p-6 rounded-2xl bg-white/5 border border-white/10 text-center">
-          <p className="text-zinc-400">No active challenge at the moment.</p>
-        </div>
+          {period === 'challenge' && (
+            <div className="mb-6 p-4 rounded-2xl bg-gradient-to-r from-orange-500/20 to-red-500/20 border border-orange-500/30 flex items-center justify-between">
+              <div>
+                <h3 className="text-white font-bold text-lg">{activeChallenge.title}</h3>
+                <p className="text-orange-200 text-sm">Earn coins to climb the ranks!</p>
+              </div>
+              <div className="text-right">
+                <div className="flex items-center gap-1 text-orange-400 mb-1 justify-end">
+                  <Timer size={16} />
+                  <span className="text-xs font-bold uppercase tracking-wider">Ends In</span>
+                </div>
+                <div className="text-white font-mono font-bold text-lg tabular-nums">
+                  {timeLeft}
+                </div>
+              </div>
+            </div>
+          )}
+        </>
       )}
 
       <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl overflow-hidden shadow-xl min-h-[300px] relative">
