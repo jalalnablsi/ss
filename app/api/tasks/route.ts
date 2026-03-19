@@ -1,52 +1,7 @@
-
 import { NextResponse } from 'next/server';
+import crypto from 'crypto';
 import { queryD1, executeD1 } from '@/lib/db';
-
-// --- دوال التشفير المتوافقة مع Edge Runtime ---
-
-async function hmacSha256(key: string | ArrayBuffer, data: string): Promise<ArrayBuffer> {
-  const encoder = new TextEncoder();
-  const cryptoKey = await crypto.subtle.importKey(
-    'raw',
-    typeof key === 'string' ? encoder.encode(key) : key,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-  return await crypto.subtle.sign('HMAC', cryptoKey, encoder.encode(data));
-}
-
-function bufferToHex(buffer: ArrayBuffer): string {
-  return Array.from(new Uint8Array(buffer))
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('');
-}
-
-// --- دالة التحقق المعدلة (Async) ---
-
-async function validateTelegramWebAppData(initData: string): Promise<boolean> {
-  const botToken = process.env.TELEGRAM_BOT_TOKEN;
-  if (!botToken) return false;
-
-  try {
-    const urlParams = new URLSearchParams(initData);
-    const hash = urlParams.get('hash');
-    if (!hash) return false;
-
-    urlParams.delete('hash');
-    const keys = Array.from(urlParams.keys()).sort();
-    let dataCheckString = keys.map(key => `${key}=${urlParams.get(key)}`).join('\n');
-
-    // استخدام Web Crypto بدلاً من createHmac
-    const secretKeyBuffer = await hmacSha256('WebAppData', botToken);
-    const calculatedHashBuffer = await hmacSha256(secretKeyBuffer, dataCheckString);
-    const calculatedHash = bufferToHex(calculatedHashBuffer);
-
-    return calculatedHash === hash;
-  } catch (error) {
-    return false;
-  }
-}
+import { validateTelegramWebAppData } from '@/lib/telegram';
 
 export async function POST(req: Request) {
   try {
@@ -56,34 +11,39 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Missing parameters' }, { status: 400 });
     }
 
-    // 1. التحقق (إضافة await ضرورية هنا)
-    const isValid = await validateTelegramWebAppData(initData);
+    // 1. Validate Telegram Data (Anti-Bot)
+    const isValid = validateTelegramWebAppData(initData);
     if (!isValid && process.env.TELEGRAM_BOT_TOKEN) {
-      return NextResponse.json({ error: 'Invalid Telegram data.' }, { status: 403 });
+      return NextResponse.json({ error: 'Invalid Telegram data. Possible bot attack.' }, { status: 403 });
     }
 
+    // Parse user data
     const urlParams = new URLSearchParams(initData);
     const userStr = urlParams.get('user');
-    if (!userStr) return NextResponse.json({ error: 'No user data' }, { status: 400 });
+    if (!userStr) {
+      return NextResponse.json({ error: 'No user data found' }, { status: 400 });
+    }
 
     const tgUser = JSON.parse(userStr);
     const telegramId = tgUser.id.toString();
 
-    // 2. جلب المستخدم من D1
+    // 2. Fetch User from D1
     const users = await queryD1('SELECT coins, challenge_coins, completed_tasks FROM users WHERE telegram_id = ?', [telegramId]);
     const user = users[0];
 
-    if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 });
+    if (!user) {
+      return NextResponse.json({ error: 'User not found' }, { status: 404 });
+    }
 
     const completedTasks = JSON.parse(user.completed_tasks || '[]');
     if (completedTasks.includes(taskId)) {
       return NextResponse.json({ error: 'Task already completed' }, { status: 400 });
     }
 
-    // حالة خاصة لربط المحفظة
+    // Special case for wallet connection
     if (taskId === 'connect_wallet') {
       const newCompletedTasks = [...completedTasks, taskId];
-      const newCoins = (user.coins || 0) + 5000;
+      const newCoins = user.coins + 5000;
       const newChallengeCoins = (user.challenge_coins || 0) + 5000;
 
       await executeD1(`
@@ -98,7 +58,45 @@ export async function POST(req: Request) {
       return NextResponse.json({ user: updatedUser });
     }
 
-    // 3. جلب بيانات المهمة من جدول المهام
+    // Special case for Telegram Channel Verification
+    if (taskId === 'tg_channel') {
+      const botToken = process.env.TELEGRAM_BOT_TOKEN;
+      if (!botToken) {
+        return NextResponse.json({ error: 'Telegram bot token not configured' }, { status: 500 });
+      }
+
+      const tasks = await queryD1('SELECT link FROM tasks WHERE id = ?', [taskId]);
+      const taskLink = tasks[0]?.link;
+      
+      if (!taskLink) {
+        return NextResponse.json({ error: 'Task link not found' }, { status: 400 });
+      }
+
+      let channelId = '';
+      if (taskLink.includes('t.me/')) {
+        const parts = taskLink.split('t.me/');
+        const username = parts[1].split('/')[0].split('?')[0];
+        if (!username.startsWith('+')) {
+          channelId = '@' + username;
+        }
+      }
+
+      if (channelId) {
+        try {
+          const tgRes = await fetch(`https://api.telegram.org/bot${botToken}/getChatMember?chat_id=${channelId}&user_id=${telegramId}`);
+          const tgData = await tgRes.json();
+
+          if (!tgData.ok || !['member', 'administrator', 'creator'].includes(tgData.result.status)) {
+            return NextResponse.json({ error: 'You must join the channel first!' }, { status: 400 });
+          }
+        } catch (e) {
+          console.error('Telegram verification error:', e);
+          return NextResponse.json({ error: 'Failed to verify channel membership' }, { status: 500 });
+        }
+      }
+    }
+
+    // 3. Define Task Rewards (Server-Side Truth)
     const tasks = await queryD1('SELECT id, reward_coins FROM tasks WHERE id = ?', [taskId]);
     const taskData = tasks[0];
 
@@ -106,11 +104,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Invalid task ID' }, { status: 400 });
     }
 
-    const reward = taskData.reward_coins || 0;
+    const reward = taskData.reward_coins;
 
-    // 4. تحديث المستخدم بالمكافأة
+    // 4. Update User
     const newCompletedTasks = [...completedTasks, taskId];
-    const newCoins = (user.coins || 0) + reward;
+    const newCoins = user.coins + reward;
     const newChallengeCoins = (user.challenge_coins || 0) + reward;
 
     await executeD1(`
