@@ -44,7 +44,6 @@ export function TapScreen() {
 
     setFloatingNumbers(prev => {
       const updated = [...prev, newNumber];
-      // Limit floating numbers to prevent lag on low-end devices
       if (updated.length > 8) {
         return updated.slice(updated.length - 8);
       }
@@ -57,22 +56,20 @@ export function TapScreen() {
   }, [tap, tapMultiplier, tapMultiplierEndTime]);
 
   const handleTap = useCallback((e: React.TouchEvent<HTMLDivElement> | React.MouseEvent<HTMLDivElement>) => {
+    // Prevent default to stop scrolling/zooming
     if (e.type === 'touchstart') {
       e.preventDefault();
     }
 
-    let clientX, clientY;
     if ('touches' in e) {
+      // Handle Multi-touch correctly
       Array.from(e.changedTouches).forEach(touch => {
         processTap(touch.clientX, touch.clientY);
       });
-      return;
     } else {
-      clientX = e.clientX;
-      clientY = e.clientY;
+      // Handle Mouse
+      processTap(e.clientX, e.clientY);
     }
-    
-    processTap(clientX, clientY);
   }, [processTap]);
 
   const formatCoins = (num: number) => {
@@ -81,6 +78,9 @@ export function TapScreen() {
 
   const isMultiplierActive = tapMultiplierEndTime > now;
   const isBotActive = autoBotActiveUntil > now;
+  
+  // FIX 4: Dynamic Multiplier Display
+  const currentMultiplierDisplay = isMultiplierActive ? `x${tapMultiplier}` : '';
 
   return (
     <div className="flex flex-col items-center justify-between h-full w-full pt-4 pb-28 px-4 relative overflow-hidden">
@@ -88,7 +88,7 @@ export function TapScreen() {
       {/* Background Effects */}
       <div className="absolute top-[-10%] left-[-10%] w-[120%] h-[120%] bg-[radial-gradient(circle_at_50%_40%,_rgba(250,204,21,0.08)_0%,_transparent_60%)] pointer-events-none" />
       
-      {/* Top Banner Ad (Non-intrusive) */}
+      {/* Top Banner */}
       <div className="w-full max-w-sm bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-3 flex items-center justify-between z-20 shadow-lg cursor-pointer hover:bg-white/10 transition-colors">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shrink-0">
@@ -106,7 +106,7 @@ export function TapScreen() {
       <div className="w-full flex flex-col items-center space-y-6 z-10 mt-4">
         
         {/* Active Buffs */}
-        <div className="flex gap-2 h-8">
+        <div className="flex gap-2 h-8 flex-wrap justify-center">
           <AnimatePresence>
             {isMultiplierActive && (
               <motion.div
@@ -116,7 +116,8 @@ export function TapScreen() {
                 className="bg-orange-500/10 border border-orange-500/30 text-orange-400 px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1.5 shadow-[0_0_15px_rgba(249,115,22,0.15)] backdrop-blur-md"
               >
                 <Zap size={14} />
-                <span>x2 Multiplier</span>
+                {/* Displays x4 dynamically */}
+                <span>{currentMultiplierDisplay} Multiplier</span>
               </motion.div>
             )}
             {isBotActive && (
@@ -203,7 +204,7 @@ export function TapScreen() {
           </div>
         </div>
         
-        {/* Beautiful Energy Bar */}
+        {/* Energy Bar */}
         <div className="h-6 w-full bg-[#111] rounded-full overflow-hidden border border-white/10 p-1 shadow-inner relative">
           <motion.div 
             className="h-full bg-gradient-to-r from-yellow-600 via-yellow-400 to-yellow-300 rounded-full relative overflow-hidden"
