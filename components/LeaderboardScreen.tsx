@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Trophy, Crown, Loader2, Timer } from 'lucide-react';
 import { useGame } from './GameProvider';
 
@@ -28,6 +28,15 @@ export function LeaderboardScreen() {
   const [activeChallenge, setActiveChallenge] = useState<ActiveChallenge | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [timeLeft, setTimeLeft] = useState<string>('');
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+
+  // ✅ إصلاح: جلب currentUserId بأمان
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
+      setCurrentUserId(tgUser?.id?.toString() || null);
+    }
+  }, []);
 
   useEffect(() => {
     const fetchLeaderboard = async () => {
@@ -74,22 +83,23 @@ export function LeaderboardScreen() {
     return () => clearInterval(interval);
   }, [activeChallenge, period]);
 
-  // Determine if current user is in the top 50
-  const tgUserStr = typeof window !== 'undefined' ? window.Telegram?.WebApp?.initDataUnsafe?.user : null;
-  const currentUserId = tgUserStr?.id?.toString();
-  
-  const currentUserInTop50 = leaderboard.find(u => u.id === currentUserId);
-  
-  // If not in top 50, append them at the bottom with a mock rank (or real rank if we had it)
-  const displayList = [...leaderboard];
-  if (!currentUserInTop50 && currentUserId) {
-    displayList.push({
-      id: currentUserId,
-      name: 'You',
-      coins: period === 'challenge' ? challengeCoins : coins,
-      rank: 999, // Placeholder rank
-    });
-  }
+  // ✅ تحسين: استخدام useMemo لـ displayList
+  const currentUserInTop50 = useMemo(() => 
+    leaderboard.find(u => u.id === currentUserId),
+  [leaderboard, currentUserId]);
+
+  const displayList = useMemo(() => {
+    const list = [...leaderboard];
+    if (!currentUserInTop50 && currentUserId) {
+      list.push({
+        id: currentUserId,
+        name: 'You',
+        coins: period === 'challenge' ? (challengeCoins || 0) : coins,
+        rank: 0, // 0 = غير مصنف
+      });
+    }
+    return list;
+  }, [leaderboard, currentUserId, currentUserInTop50, period, challengeCoins, coins]);
 
   const formatCoins = (num: number) => {
     if (num >= 1000000) return (num / 1000000).toFixed(2) + 'M';
@@ -107,7 +117,6 @@ export function LeaderboardScreen() {
         <p className="text-zinc-400 text-sm">Top players around the world</p>
       </div>
 
-      {/* Segmented Control - Only show if there is an active challenge */}
       {activeChallenge && (
         <>
           <div className="flex p-1 bg-white/5 border border-white/10 rounded-2xl mb-6">
@@ -168,7 +177,8 @@ export function LeaderboardScreen() {
                     displayRank === 2 ? 'text-zinc-300 drop-shadow-[0_0_8px_rgba(212,212,216,0.5)]' : 
                     displayRank === 3 ? 'text-amber-600 drop-shadow-[0_0_8px_rgba(217,119,6,0.5)]' : 'text-zinc-600'
                   }`}>
-                    {displayRank === 1 ? <Crown size={24} className="mx-auto" /> : `#${displayRank}`}
+                    {displayRank === 1 ? <Crown size={24} className="mx-auto" /> : 
+                     displayRank === 0 ? '...' : `#${displayRank}`}
                   </div>
                   
                   <div className="flex items-center gap-3">
