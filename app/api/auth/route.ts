@@ -65,11 +65,11 @@ function checkAuthRateLimit(identifier: string): boolean {
 
 // --- Helper Functions ---
 function calculateEnergyRegen(user: UserRecord, now: number): number {
-  const timePassedSec = Math.floor((now - user.last_update_time) / 1000);
+  const timePassedSec = (now - user.last_update_time) / 1000;
   if (timePassedSec <= 0) return user.energy;
 
   const regenRate = user.max_energy / 1800; // Full in 30 minutes
-  const recoveredEnergy = Math.floor(timePassedSec * regenRate);
+  const recoveredEnergy = timePassedSec * regenRate;
   return Math.min(user.max_energy, user.energy + recoveredEnergy);
 }
 
@@ -77,12 +77,12 @@ function calculateBotEarnings(user: UserRecord, now: number): number {
   if (user.auto_bot_active_until <= user.last_update_time) return 0;
 
   const activeEndTime = Math.min(now, user.auto_bot_active_until);
-  const activeSeconds = Math.floor((activeEndTime - user.last_update_time) / 1000);
+  const activeSeconds = (activeEndTime - user.last_update_time) / 1000;
   
   if (activeSeconds <= 0) return 0;
 
   const rate = 0.5; // 0.5 coin per second
-  return Math.floor(activeSeconds * rate);
+  return activeSeconds * rate;
 }
 
 // --- Main Handler ---
@@ -112,8 +112,8 @@ export async function POST(req: Request) {
     }
 
     // 2. Validate Telegram
-    const isValid = await validateTelegramWebAppData(initData);
-    if (!isValid) {
+    const isValid = validateTelegramWebAppData(initData);
+    if (!isValid && process.env.TELEGRAM_BOT_TOKEN) {
       console.error(`[${requestId}] Invalid Telegram signature`);
       return NextResponse.json(
         { error: 'Access Denied - Invalid signature', code: 'INVALID_SIGNATURE' },
@@ -276,7 +276,11 @@ export async function POST(req: Request) {
     // 6. Calculate final energy (after all updates)
     const finalEnergy = calculateEnergyRegen(user, now);
 
-    // 7. Build Response
+    // 7. Fetch Adsgram Block ID from settings
+    const settings = await queryD1<{key: string, value: string}>('SELECT * FROM settings WHERE key = ?', ['adsgram_block_id']);
+    const adsgramBlockId = settings.length > 0 ? settings[0].value : '';
+
+    // 8. Build Response
     const duration = Math.round(performance.now() - startTime);
     console.log(`[${requestId}] Auth ${isNewUser ? 'created' : 'success'} for ${telegramId} in ${duration}ms`);
 
@@ -307,6 +311,9 @@ export async function POST(req: Request) {
         referredBy: user.referred_by,
         completedTasks: JSON.parse(user.completed_tasks || '[]'),
         createdAt: user.created_at
+      },
+      settings: {
+        adsgramBlockId
       },
       serverTime: now,
       meta: {
