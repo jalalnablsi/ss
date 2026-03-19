@@ -25,6 +25,9 @@ export function TapScreen() {
   }, []);
 
   const processTap = useCallback((clientX: number, clientY: number) => {
+    // ✅ فحص مبكر للطاقة
+    if (energy < 1) return;
+    
     const success = tap(1);
     if (!success) return; 
 
@@ -33,6 +36,7 @@ export function TapScreen() {
     const y = rect ? clientY - rect.top : clientY;
 
     const isMultiplierActive = tapMultiplierEndTime > Date.now();
+    // ✅ استخدام tapMultiplier مباشرة من الـ context
     const value = 1 * (isMultiplierActive ? tapMultiplier : 1);
 
     const newNumber = {
@@ -53,21 +57,18 @@ export function TapScreen() {
     setTimeout(() => {
       setFloatingNumbers(prev => prev.filter(n => n.id !== newNumber.id));
     }, 600);
-  }, [tap, tapMultiplier, tapMultiplierEndTime]);
+  }, [tap, tapMultiplier, tapMultiplierEndTime, energy]);
 
   const handleTap = useCallback((e: React.TouchEvent<HTMLDivElement> | React.MouseEvent<HTMLDivElement>) => {
-    // Prevent default to stop scrolling/zooming
     if (e.type === 'touchstart') {
       e.preventDefault();
     }
 
     if ('touches' in e) {
-      // Handle Multi-touch correctly
       Array.from(e.changedTouches).forEach(touch => {
         processTap(touch.clientX, touch.clientY);
       });
     } else {
-      // Handle Mouse
       processTap(e.clientX, e.clientY);
     }
   }, [processTap]);
@@ -79,7 +80,7 @@ export function TapScreen() {
   const isMultiplierActive = tapMultiplierEndTime > now;
   const isBotActive = autoBotActiveUntil > now;
   
-  // FIX 4: Dynamic Multiplier Display
+  // ✅ عرض الرقم الصحيح من الـ context
   const currentMultiplierDisplay = isMultiplierActive ? `x${tapMultiplier}` : '';
 
   return (
@@ -116,7 +117,7 @@ export function TapScreen() {
                 className="bg-orange-500/10 border border-orange-500/30 text-orange-400 px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1.5 shadow-[0_0_15px_rgba(249,115,22,0.15)] backdrop-blur-md"
               >
                 <Zap size={14} />
-                {/* Displays x4 dynamically */}
+                {/* ✅ عرض الرقم الصحيح من الـ context */}
                 <span>{currentMultiplierDisplay} Multiplier</span>
               </motion.div>
             )}
