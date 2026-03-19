@@ -22,8 +22,12 @@ export default function AdminDashboard() {
   const [addDays, setAddDays] = useState(1);
   const [isChallengeLoading, setIsChallengeLoading] = useState(false);
 
+  const [adsgramBlockId, setAdsgramBlockId] = useState('');
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+
   useEffect(() => {
     checkAuth();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const checkAuth = async () => {
@@ -75,10 +79,11 @@ export default function AdminDashboard() {
 
   const fetchData = async () => {
     try {
-      const [statsRes, tasksRes, challengeRes] = await Promise.all([
+      const [statsRes, tasksRes, challengeRes, settingsRes] = await Promise.all([
         fetch('/api/admin/stats'),
         fetch('/api/admin/tasks'),
-        fetch('/api/admin/challenge')
+        fetch('/api/admin/challenge'),
+        fetch('/api/admin/settings')
       ]);
 
       if (statsRes.ok) setStats(await statsRes.json());
@@ -90,8 +95,34 @@ export default function AdminDashboard() {
         const data = await challengeRes.json();
         setActiveChallenge(data.challenge);
       }
+      if (settingsRes.ok) {
+        const data = await settingsRes.json();
+        if (data.settings?.adsgram_block_id) {
+          setAdsgramBlockId(data.settings.adsgram_block_id);
+        }
+      }
     } catch (e) {
       console.error('Failed to fetch data', e);
+    }
+  };
+
+  const saveSettings = async () => {
+    setIsSavingSettings(true);
+    try {
+      const res = await fetch('/api/admin/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ adsgram_block_id: adsgramBlockId }),
+      });
+      if (res.ok) {
+        alert('Settings saved successfully');
+      } else {
+        alert('Failed to save settings');
+      }
+    } catch (e) {
+      alert('Error saving settings');
+    } finally {
+      setIsSavingSettings(false);
     }
   };
 
@@ -356,6 +387,32 @@ export default function AdminDashboard() {
               </div>
             </div>
           )}
+        </div>
+
+        {/* Settings Management */}
+        <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 mb-10">
+          <div className="flex items-center gap-3 mb-6">
+            <h2 className="text-xl font-bold">Settings</h2>
+          </div>
+          <div className="max-w-md">
+            <label className="block text-zinc-400 text-sm mb-2">Adsgram Block ID</label>
+            <div className="flex items-end gap-4">
+              <input 
+                type="text" 
+                value={adsgramBlockId}
+                onChange={e => setAdsgramBlockId(e.target.value)}
+                className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2 text-white"
+                placeholder="e.g. 12345"
+              />
+              <button 
+                onClick={saveSettings}
+                disabled={isSavingSettings}
+                className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-xl transition-colors font-medium h-[42px] flex items-center justify-center"
+              >
+                {isSavingSettings ? <Loader2 className="animate-spin" size={18} /> : 'Save'}
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* Tasks Management */}
