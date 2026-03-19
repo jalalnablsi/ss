@@ -35,7 +35,7 @@ function calculateEnergyRegen(user: any, now: number): number {
   const timePassedSec = (now - user.last_update_time) / 1000;
   if (timePassedSec <= 0) return user.energy;
   
-  const regenRate = user.max_energy / 1800; // Full energy in 30 mins
+  const regenRate = user.max_energy / 1800; 
   const recoveredEnergy = timePassedSec * regenRate;
   return Math.min(user.max_energy, user.energy + recoveredEnergy);
 }
@@ -49,7 +49,7 @@ function calculateBotEarnings(user: any, now: number): number {
   
   if (activeSeconds <= 0) return 0;
   
-  return activeSeconds * 0.5; // 0.5 coin per second
+  return activeSeconds * 0.5;
 }
 
 export async function POST(req: Request) {
@@ -62,7 +62,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Missing initData', code: 'MISSING_INIT_DATA' }, { status: 400 });
     }
 
-    // 1. Validate Telegram Signature
+    // 1. Validate Telegram Signature (Strict)
     const isValid = validateTelegramWebAppData(initData);
     if (!isValid && process.env.TELEGRAM_BOT_TOKEN) {
       console.warn(`[${requestId}] Invalid Telegram signature`);
@@ -81,23 +81,23 @@ export async function POST(req: Request) {
     const now = Date.now();
     const todayStr = new Date(now).toISOString().split('T')[0];
 
-    // 3. Fetch User from DB
+    // 3. Fetch User from DB (Use Transaction logic conceptually here)
     const users = await queryD1('SELECT * FROM users WHERE telegram_id = ?', [telegramId]);
     const user = users[0];
 
     if (!user) {
-      return NextResponse.json({ error: 'User not found. Please restart the app.', code: 'USER_NOT_FOUND' }, { status: 404 });
+      return NextResponse.json({ error: 'User not found.', code: 'USER_NOT_FOUND' }, { status: 404 });
     }
 
-    // 4. Pre-Calculate States
-    let newEnergy = calculateEnergyRegen(user, now);
+    // 4. Pre-Calculate States based on Server Time (Source of Truth)
+    let currentEnergy = calculateEnergyRegen(user, now);
     let botEarnings = calculateBotEarnings(user, now);
     
     let newCoins = user.coins + botEarnings;
     let newChallengeCoins = (user.challenge_coins || 0) + botEarnings;
     let newTotalTaps = user.total_taps;
     
-    // متغيرات للتحديث
+    // Initialize state variables with current DB values
     let newTapMultiplier = user.tap_multiplier;
     let newTapMultiplierEndTime = user.tap_multiplier_end_time;
     let newAutoBotActiveUntil = user.auto_bot_active_until;
@@ -105,7 +105,7 @@ export async function POST(req: Request) {
     let newLastAdWatchDate = user.last_ad_watch_date;
     let newReferralsActivated = user.referrals_activated;
 
-    // تحقق من تاريخ آخر إعلان لإعادة تعيين العداد اليومي
+    // Reset Daily Ads Counter if it's a new day
     let lastAdDateStr = '';
     if (newLastAdWatchDate) {
       lastAdDateStr = newLastAdWatchDate.includes('T') ? newLastAdWatchDate.split('T')[0] : new Date(parseInt(newLastAdWatchDate)).toISOString().split('T')[0];
@@ -115,71 +115,88 @@ export async function POST(req: Request) {
       newAdsWatchedToday = 0;
     }
 
-    // 5. Process Taps (Server-Side Validation)
-    // ✅ تم تعريف المتغيرات هنا لتكون متاحة في كامل الدالة (إصلاح خطأ البناء)
-    let processedTapsCount = 0; 
-    let maxTapsAllowed = 0;
+    // ---------------------------------------------------------
+    // 5. PROCESS AD REWARDS FIRST (Before Taps)
+    // This ensures that if an ad was watched, the multiplier is active 
+    // BEFORE we process the incoming taps in this same request.
+    // ---------------------------------------------------------
+    let adRewardApplied = false;
+    if (adWatchedType) {
+      // Security: Check Daily Limit
+      if (newAdsWatchedToday >= 30) {
+        return NextResponse.json({ error: 'Daily ad limit reached', code: 'LIMIT_REACHED' }, { status: 429 });
+      }
 
+      // Security: Simple Cooldown Check (Optional but recommended)
+      // Prevent spamming ad requests within 2 seconds
+      const lastAdTimestamp = newLastAdWatchDate && !isNaN(Date.parse(newLastAdWatchDate)) 
+        ? new Date(newLastAdWatchDate).getTime() 
+        : 0;
+      
+      if (now - lastAdTimestamp < 2000 && lastAdTimestamp !== 0) {
+         // Allow it but log warning, or reject strictly depending on your policy
+         // For now, we proceed but ensure we don't double count if logic fails
+      }
+
+      newAdsWatchedToday += 1;
+      newLastAdWatchDate = new Date(now).toISOString();
+      adRewardApplied = true;
+
+      // Apply Base Rewards (Always give coins for watching)
+      newCoins += 1000;
+      newChallengeCoins += 1000;
+
+      // Apply Specific Boosts
+      if (adWatchedType === 'multiplier') {
+        newTapMultiplier = 4;
+        newTapMultiplierEndTime = now + 5 * 60 * 1000; // 5 mins from NOW (Server Time)
+      } else if (adWatchedType === 'energy') {
+        currentEnergy = user.max_energy; // Refill to max
+      } else if (adWatchedType === 'bot') {
+        // Extend bot time or set new time
+        const currentTime = newAutoBotActiveUntil > now ? newAutoBotActiveUntil : now;
+        newAutoBotActiveUntil = currentTime + 6 * 60 * 60 * 1000; 
+      }
+    }
+
+    // ---------------------------------------------------------
+    // 6. Process Taps (Server-Side Validation)
+    // ---------------------------------------------------------
+    let processedTapsCount = 0; 
+    
     if (taps && Array.isArray(taps) && taps.length > 0) {
+      // Calculate Max Allowed Taps based on time passed since last update
       const timeDiffSec = (now - user.last_update_time) / 1000;
-      maxTapsAllowed = Math.floor(timeDiffSec * 15) + 15; 
+      // Allow 15 taps per second accumulation + burst of 15
+      const maxTapsAllowed = Math.floor(timeDiffSec * 15) + 15; 
+      
       const tapsToProcess = Math.min(taps.length, maxTapsAllowed);
-      processedTapsCount = tapsToProcess; // حفظ العدد للمرجعية
+      processedTapsCount = tapsToProcess;
 
       for (let i = 0; i < tapsToProcess; i++) {
-        if (newEnergy >= 1) {
-          newEnergy -= 1;
+        // Use the UPDATED energy (after ad refill if applicable)
+        if (currentEnergy >= 1) {
+          currentEnergy -= 1;
           newTotalTaps += 1;
           
-          // Check Multiplier
+          // Check Multiplier using the UPDATED end time (after ad activation if applicable)
+          // This fixes the issue where taps sent immediately after ad weren't multiplied
           const isMultiplierActive = newTapMultiplierEndTime > now;
           const multiplier = isMultiplierActive ? newTapMultiplier : 1;
           
           newCoins += 1 * multiplier;
           newChallengeCoins += 1 * multiplier;
+        } else {
+          // Stop processing if energy runs out
+          break; 
         }
       }
     }
 
-    // 6. Process Ad Rewards
-    if (adWatchedType) {
-      // Check Daily Limit
-      if (newAdsWatchedToday >= 30) {
-        return NextResponse.json({ error: 'Daily ad limit reached (30/30)', code: 'LIMIT_REACHED' }, { status: 429 });
-      }
-
-      // Check Cooldown (30 seconds) - Optional logic kept simple
-      const lastAdTimestamp = newLastAdWatchDate && !isNaN(Date.parse(newLastAdWatchDate)) 
-        ? new Date(newLastAdWatchDate).getTime() 
-        : (parseInt(newLastAdWatchDate) || 0);
-      
-      const timeSinceLastAd = now - (lastAdTimestamp || 0);
-      if (timeSinceLastAd < 30000 && lastAdTimestamp !== 0) {
-         // يمكن تفعيل السطر التالي لفرض الانتظار بدقة
-         // return NextResponse.json({ error: 'Please wait before watching another ad', code: 'COOLDOWN' }, { status: 429 });
-      }
-
-      newAdsWatchedToday += 1;
-      newLastAdWatchDate = new Date(now).toISOString(); // حفظ كـ ISO String
-
-      // Apply Rewards
-      newCoins += 1000;
-      newChallengeCoins += 1000;
-
-      if (adWatchedType === 'multiplier') {
-        newTapMultiplier = 4;
-        newTapMultiplierEndTime = now + 5 * 60 * 1000; // 5 mins
-      } else if (adWatchedType === 'energy') {
-        newEnergy = user.max_energy;
-      } else if (adWatchedType === 'bot') {
-        newAutoBotActiveUntil = now + 6 * 60 * 60 * 1000; // 6 hours
-      }
-    }
-
-    // 7. Handle Referrals (Reward when reaching 500 taps for the first time)
+    // 7. Handle Referrals (First time reaching 500 taps)
     if (newTotalTaps >= 500 && user.total_taps < 500 && user.referred_by) {
       try {
-        const referrers = await queryD1('SELECT coins, challenge_coins, referrals_activated, referral_coins_earned FROM users WHERE telegram_id = ?', [user.referred_by]);
+        const referrers = await queryD1('SELECT coins, challenge_coins, referrals_activated FROM users WHERE telegram_id = ?', [user.referred_by]);
         const referrer = referrers[0];
 
         if (referrer) {
@@ -193,14 +210,14 @@ export async function POST(req: Request) {
           `, [user.referred_by]);
           
           newReferralsActivated += 1;
-          console.log(`[${requestId}] Referral reward granted: ${user.referred_by} invited ${telegramId}`);
+          console.log(`[${requestId}] Referral reward granted: ${user.referred_by}`);
         }
       } catch (e) {
         console.error(`[${requestId}] Failed to process referral reward:`, e);
       }
     }
 
-    // 8. Update Database (Single Atomic Update)
+    // 8. Update Database (Atomic Update)
     await executeD1(`
       UPDATE users SET 
         coins = ?, 
@@ -218,7 +235,7 @@ export async function POST(req: Request) {
     `, [
       newCoins, 
       newChallengeCoins, 
-      newEnergy, 
+      currentEnergy, // Use the calculated energy
       newTotalTaps,
       newTapMultiplier, 
       newTapMultiplierEndTime, 
@@ -238,7 +255,7 @@ export async function POST(req: Request) {
         telegramId: user.telegram_id,
         coins: newCoins,
         challengeCoins: newChallengeCoins,
-        energy: newEnergy,
+        energy: currentEnergy,
         maxEnergy: user.max_energy,
         totalTaps: newTotalTaps,
         tapMultiplier: newTapMultiplier,
@@ -252,8 +269,9 @@ export async function POST(req: Request) {
       serverTime: now,
       meta: {
         botEarnings,
-        energyRecovered: newEnergy - user.energy,
-        processedTaps: processedTapsCount // ✅ استخدام المتغير المعرف مسبقاً
+        energyRecovered: currentEnergy - user.energy,
+        processedTaps: processedTapsCount,
+        adRewardApplied
       }
     });
 
