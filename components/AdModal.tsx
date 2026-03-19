@@ -1,161 +1,129 @@
 'use client';
 
-import React from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { X, Zap, Battery, Bot, Gift, Sparkles } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
+import { PlayCircle, Loader2 } from 'lucide-react';
 
 interface AdModalProps {
   isOpen: boolean;
-  type: 'multiplier' | 'energy' | 'bot';
-  onClose: () => void;
-  onWatch: () => Promise<void>;
-  isWatching: boolean;
+  title: string;
+  description: string;
+  onComplete: (success: boolean) => void;
 }
 
-const adConfig = {
-  multiplier: {
-    title: '⚡ DOUBLE STRIKE',
-    description: 'Get 2x coins for 5 minutes!',
-    icon: Zap,
-    color: 'from-orange-500 to-yellow-500',
-    reward: '2x Multiplier • 5 Minutes',
-    coins: '+1000'
-  },
-  energy: {
-    title: '🔋 FULL ENERGY',
-    description: 'Instantly refill your energy!',
-    icon: Battery,
-    color: 'from-green-500 to-emerald-500',
-    reward: 'Full Energy Refill',
-    coins: '+1000'
-  },
-  bot: {
-    title: '🤖 AUTO BOT',
-    description: 'Auto-tap for 6 hours!',
-    icon: Bot,
-    color: 'from-blue-500 to-cyan-500',
-    reward: 'Auto Bot • 6 Hours',
-    coins: '+1000'
-  }
-};
+export function AdModal({ isOpen, title, description, onComplete }: AdModalProps) {
+  const [timeLeft, setTimeLeft] = useState(5);
+  const [isWatching, setIsWatching] = useState(false);
 
-export function AdModal({ isOpen, type, onClose, onWatch, isWatching }: AdModalProps) {
-  const config = adConfig[type];
+  const canClaim = isWatching && timeLeft === 0;
 
-  if (!config) return null;
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    if (isWatching && timeLeft > 0) {
+      timer = setTimeout(() => setTimeLeft(prev => prev - 1), 1000);
+    }
+    return () => clearTimeout(timer);
+  }, [isWatching, timeLeft]);
+
+  const handleStartAd = () => {
+    setIsWatching(true);
+  };
+
+  const handleClaim = () => {
+    onComplete(true);
+    setIsWatching(false);
+    setTimeLeft(5);
+  };
+
+  const handleCancel = () => {
+    onComplete(false);
+    setIsWatching(false);
+    setTimeLeft(5);
+  };
+
+  if (!isOpen) return null;
 
   return (
     <AnimatePresence>
-      {isOpen && (
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-md p-4"
+      >
         <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md"
-          onClick={onClose}
+          initial={{ scale: 0.9, y: 20 }}
+          animate={{ scale: 1, y: 0 }}
+          exit={{ scale: 0.9, y: 20 }}
+          className="bg-[#111] border border-white/10 rounded-3xl p-6 w-full max-w-sm shadow-2xl relative overflow-hidden"
         >
-          <motion.div
-            initial={{ scale: 0.9, y: 20 }}
-            animate={{ scale: 1, y: 0 }}
-            exit={{ scale: 0.9, y: 20 }}
-            className="relative w-full max-w-sm bg-gradient-to-b from-zinc-900 to-black rounded-3xl border border-white/10 overflow-hidden shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Close Button */}
-            <button
-              onClick={onClose}
-              className="absolute top-4 right-4 z-10 p-2 bg-black/50 rounded-full hover:bg-black/70 transition-colors"
-            >
-              <X size={20} className="text-zinc-400" />
-            </button>
-
-            {/* Header */}
-            <div className={`relative h-48 bg-gradient-to-br ${config.color} p-6 flex items-center justify-center overflow-hidden`}>
-              <div className="absolute inset-0 bg-black/20" />
-              <div className="absolute -top-10 -right-10 w-32 h-32 bg-white/20 rounded-full blur-3xl" />
-              <div className="absolute -bottom-10 -left-10 w-32 h-32 bg-white/20 rounded-full blur-3xl" />
+          <div className="absolute -top-20 -right-20 w-40 h-40 bg-blue-500/20 blur-3xl rounded-full pointer-events-none" />
+          
+          {!isWatching ? (
+            <div className="text-center space-y-4 relative z-10">
+              <div className="w-16 h-16 bg-blue-500/10 text-blue-400 rounded-full flex items-center justify-center mx-auto mb-4 border border-blue-500/20">
+                <PlayCircle size={32} />
+              </div>
+              <h3 className="text-xl font-bold text-white">{title}</h3>
+              <p className="text-zinc-400 text-sm leading-relaxed">{description}</p>
               
-              <div className="relative text-center">
-                <motion.div
-                  animate={{ 
-                    rotate: [0, 10, -10, 0],
-                    scale: [1, 1.1, 1]
-                  }}
-                  transition={{ duration: 2, repeat: Infinity }}
-                  className="w-20 h-20 mx-auto mb-2 bg-white/20 backdrop-blur-xl rounded-2xl flex items-center justify-center"
+              <div className="pt-6 flex gap-3">
+                <button
+                  onClick={handleCancel}
+                  className="flex-1 py-3.5 rounded-2xl font-semibold text-zinc-400 bg-white/5 hover:bg-white/10 transition-colors"
                 >
-                  <config.icon size={40} className="text-white" />
-                </motion.div>
-                <h2 className="text-2xl font-black text-white">{config.title}</h2>
-                <p className="text-white/80 text-sm">{config.description}</p>
+                  Cancel
+                </button>
+                <button
+                  onClick={handleStartAd}
+                  className="flex-1 py-3.5 rounded-2xl font-semibold text-black bg-gradient-to-r from-blue-400 to-indigo-500 hover:opacity-90 transition-opacity shadow-[0_0_20px_rgba(59,130,246,0.3)]"
+                >
+                  Watch Ad
+                </button>
               </div>
             </div>
-
-            {/* Body */}
-            <div className="p-6 space-y-6">
-              {/* Rewards */}
-              <div className="bg-white/5 rounded-2xl p-4 border border-white/10">
-                <div className="flex items-center gap-3 mb-3">
-                  <div className="p-2 bg-yellow-500/20 rounded-xl">
-                    <Gift size={20} className="text-yellow-400" />
-                  </div>
-                  <span className="text-sm font-medium text-zinc-300">You will receive:</span>
-                </div>
-                
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-zinc-400">Watch Reward:</span>
-                    <span className="text-yellow-400 font-bold">{config.coins} Coins</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-zinc-400">Bonus:</span>
-                    <span className="text-white font-bold">{config.reward}</span>
-                  </div>
-                </div>
-
-                {/* Ad Info */}
-                <div className="mt-4 pt-4 border-t border-white/10 flex items-center gap-2 text-xs text-zinc-500">
-                  <Sparkles size={14} />
-                  <span>30-second video ad • No download required</span>
-                </div>
-              </div>
-
-              {/* Watch Button */}
-              <button
-                onClick={onWatch}
-                disabled={isWatching}
-                className={`w-full py-4 rounded-xl font-bold text-lg relative overflow-hidden group
-                  ${isWatching 
-                    ? 'bg-zinc-700 text-zinc-400 cursor-not-allowed' 
-                    : `bg-gradient-to-r ${config.color} text-white hover:shadow-lg hover:scale-[1.02] active:scale-[0.98] transition-all`
-                  }`}
-              >
-                {isWatching ? (
-                  <div className="flex items-center justify-center gap-2">
-                    <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    <span>Loading Ad...</span>
-                  </div>
+          ) : (
+            <div className="text-center space-y-6 py-4 relative z-10">
+              <h3 className="text-lg font-bold text-white">
+                {canClaim ? 'Ad Completed!' : 'Watching Ad...'}
+              </h3>
+              
+              <div className="relative w-24 h-24 mx-auto flex items-center justify-center">
+                {!canClaim ? (
+                  <>
+                    <Loader2 size={48} className="text-blue-500 animate-spin" />
+                    <span className="absolute text-xl font-bold">{timeLeft}</span>
+                  </>
                 ) : (
-                  <div className="flex items-center justify-center gap-2">
-                    <span>▶</span>
-                    <span>Watch Ad & Claim</span>
-                  </div>
+                  <motion.div
+                    initial={{ scale: 0 }}
+                    animate={{ scale: 1 }}
+                    className="w-20 h-20 bg-green-500/20 text-green-400 rounded-full flex items-center justify-center border border-green-500/30"
+                  >
+                    <span className="text-3xl">🎉</span>
+                  </motion.div>
                 )}
+              </div>
 
-                {/* Shine Effect */}
-                {!isWatching && (
-                  <div className="absolute inset-0 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 bg-gradient-to-r from-transparent via-white/20 to-transparent" />
-                )}
-              </button>
-
-              {/* Terms */}
-              <p className="text-center text-xs text-zinc-600">
-                By watching you agree to our Terms of Service
+              <p className="text-zinc-400 text-sm">
+                {canClaim ? 'Thank you! You can now claim your reward.' : 'Please wait until the ad finishes to get your reward.'}
               </p>
+
+              <button
+                onClick={handleClaim}
+                disabled={!canClaim}
+                className={`w-full py-3.5 rounded-2xl font-bold transition-all duration-300 ${
+                  canClaim 
+                    ? 'bg-gradient-to-r from-green-400 to-emerald-500 text-black shadow-[0_0_20px_rgba(52,211,153,0.4)] hover:scale-[1.02]' 
+                    : 'bg-white/5 text-zinc-500 cursor-not-allowed'
+                }`}
+              >
+                {canClaim ? 'Claim Reward' : `Wait ${timeLeft}s`}
+              </button>
             </div>
-          </motion.div>
+          )}
         </motion.div>
-      )}
+      </motion.div>
     </AnimatePresence>
   );
 }
