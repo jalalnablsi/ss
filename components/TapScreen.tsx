@@ -1,9 +1,9 @@
 'use client';
 
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useGame } from './GameProvider';
-import { Zap, Bot, ShieldAlert, ExternalLink, Sparkles } from 'lucide-react';
+import { Zap, Bot, ShieldAlert, Sparkles } from 'lucide-react';
 
 interface FloatingNumber {
   id: number;
@@ -18,14 +18,30 @@ export function TapScreen() {
   const [now, setNow] = useState(() => Date.now());
   const numberIdRef = useRef(0);
   const containerRef = useRef<HTMLDivElement>(null);
+  const adContainerRef = useRef<HTMLDivElement>(null);
 
-  React.useEffect(() => {
+  useEffect(() => {
     const interval = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(interval);
   }, []);
 
+  // Load ad script
+  useEffect(() => {
+    if (adContainerRef.current && typeof window !== 'undefined') {
+      const script = document.createElement('script');
+      script.src = 'https://pl28947087.profitablecpmratenetwork.com/80/32/93/803293a4f2eb1a356e9e440cc5c167bd.js';
+      script.async = true;
+      adContainerRef.current.appendChild(script);
+
+      return () => {
+        if (adContainerRef.current && script.parentNode) {
+          adContainerRef.current.removeChild(script);
+        }
+      };
+    }
+  }, []);
+
   const processTap = useCallback((clientX: number, clientY: number) => {
-    // ✅ فحص مبكر للطاقة
     if (energy < 1) return;
     
     const success = tap(1);
@@ -36,7 +52,6 @@ export function TapScreen() {
     const y = rect ? clientY - rect.top : clientY;
 
     const isMultiplierActive = tapMultiplierEndTime > Date.now();
-    // ✅ استخدام tapMultiplier مباشرة من الـ context
     const value = 1 * (isMultiplierActive ? tapMultiplier : 1);
 
     const newNumber = {
@@ -79,32 +94,23 @@ export function TapScreen() {
 
   const isMultiplierActive = tapMultiplierEndTime > now;
   const isBotActive = autoBotActiveUntil > now;
-  
-  // ✅ عرض الرقم الصحيح من الـ context
   const currentMultiplierDisplay = isMultiplierActive ? `x${tapMultiplier}` : '';
 
   return (
-    <div className="flex flex-col items-center justify-between h-full w-full pt-4 pb-28 px-4 relative overflow-hidden">
+    <div className="flex flex-col items-center justify-between h-full w-full pt-2 pb-28 px-4 relative overflow-hidden">
       
       {/* Background Effects */}
       <div className="absolute top-[-10%] left-[-10%] w-[120%] h-[120%] bg-[radial-gradient(circle_at_50%_40%,_rgba(250,204,21,0.08)_0%,_transparent_60%)] pointer-events-none" />
       
-      {/* Top Banner */}
-      <div className="w-full max-w-sm bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-3 flex items-center justify-between z-20 shadow-lg cursor-pointer hover:bg-white/10 transition-colors">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shrink-0">
-            <Sparkles size={18} className="text-white" />
-          </div>
-          <div>
-            <div className="text-[10px] text-zinc-400 font-semibold uppercase tracking-wider">Sponsored</div>
-            <div className="text-sm font-bold text-white">Play Web3 Quest</div>
-          </div>
-        </div>
-        <ExternalLink size={16} className="text-zinc-500" />
-      </div>
+      {/* Ad Container - Social Bar at Top */}
+      <div 
+        ref={adContainerRef}
+        className="w-full max-w-sm z-30 mb-2"
+        style={{ minHeight: '50px' }}
+      />
 
       {/* Stats Area */}
-      <div className="w-full flex flex-col items-center space-y-6 z-10 mt-4">
+      <div className="w-full flex flex-col items-center space-y-4 z-10 mt-2">
         
         {/* Active Buffs */}
         <div className="flex gap-2 h-8 flex-wrap justify-center">
@@ -117,7 +123,6 @@ export function TapScreen() {
                 className="bg-orange-500/10 border border-orange-500/30 text-orange-400 px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1.5 shadow-[0_0_15px_rgba(249,115,22,0.15)] backdrop-blur-md"
               >
                 <Zap size={14} />
-                {/* ✅ عرض الرقم الصحيح من الـ context */}
                 <span>{currentMultiplierDisplay} Multiplier</span>
               </motion.div>
             )}
