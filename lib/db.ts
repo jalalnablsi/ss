@@ -185,4 +185,4 @@ const db = {
   transaction: transactionD1
 };
 
-export default db;
+export default db; 
