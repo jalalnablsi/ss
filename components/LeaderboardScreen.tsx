@@ -30,7 +30,6 @@ export function LeaderboardScreen() {
   const [timeLeft, setTimeLeft] = useState<string>('');
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
-  // ✅ إصلاح: جلب currentUserId بأمان
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
@@ -83,7 +82,6 @@ export function LeaderboardScreen() {
     return () => clearInterval(interval);
   }, [activeChallenge, period]);
 
-  // ✅ تحسين: استخدام useMemo لـ displayList
   const currentUserInTop50 = useMemo(() => 
     leaderboard.find(u => u.id === currentUserId),
   [leaderboard, currentUserId]);
@@ -95,16 +93,17 @@ export function LeaderboardScreen() {
         id: currentUserId,
         name: 'You',
         coins: period === 'challenge' ? (challengeCoins || 0) : coins,
-        rank: 0, // 0 = غير مصنف
+        rank: 0,
       });
     }
     return list;
   }, [leaderboard, currentUserId, currentUserInTop50, period, challengeCoins, coins]);
 
+  // ✅ الحل: استخدام 'en-US' لضمان الأرقام الإنجليزية
   const formatCoins = (num: number) => {
     if (num >= 1000000) return (num / 1000000).toFixed(2) + 'M';
     if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
-    return num.toLocaleString();
+    return num.toLocaleString('en-US');
   };
 
   return (
