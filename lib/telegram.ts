@@ -1,129 +1,49 @@
-// lib/telegram.ts
-// ✅ متوافق 100% مع Cloudflare Edge Runtime
+import crypto from 'crypto';
 
-/**
- * دالة التحقق من Telegram WebApp Data
- * تستخدم Web Crypto API بدلاً من Node crypto
- */
-export async function validateTelegramWebAppData(initData: string): Promise<boolean> {
+export function validateTelegramWebAppData(initData: string): boolean {
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
-  
   if (!botToken) {
-    console.error('[TELEGRAM] TELEGRAM_BOT_TOKEN is not set');
-    // في الإنتاج: يجب رفض الطلب إذا لا يوجد توكن
+    console.warn('TELEGRAM_BOT_TOKEN is not set. Skipping validation for development.');
+    // In a real production app, you would return false here if the token is missing.
+    // However, to allow the user to test without setting it up immediately, we might return true.
+    // BUT the user explicitly requested "production stage, no fake data, protect from bots".
+    // So we MUST return false if the token is missing.
     return false;
   }
 
   try {
     const urlParams = new URLSearchParams(initData);
     const hash = urlParams.get('hash');
-    
-    if (!hash) {
-      console.error('[TELEGRAM] Missing hash in initData');
-      return false;
-    }
+    if (!hash) return false;
 
-    // إنشاء dataCheckString (مرتب أبجدياً)
     urlParams.delete('hash');
-    const keys = Array.from(urlParams.keys()).sort();
-    const dataCheckString = keys.map(key => `${key}=${urlParams.get(key)}`).join('\n');
+    urlParams.sort();
 
-    // ✅ Web Crypto API (يعمل في Edge Runtime)
-    const secretKey = await hmacSha256('WebAppData', botToken);
-    const calculatedHash = bufferToHex(await hmacSha256(secretKey, dataCheckString));
-
-    const isValid = calculatedHash === hash;
-    
-    if (!isValid) {
-      console.error('[TELEGRAM] Hash mismatch:', {
-        received: hash.slice(0, 20) + '...',
-        calculated: calculatedHash.slice(0, 20) + '...',
-        dataLength: dataCheckString.length
-      });
+    let dataCheckString = '';
+    for (const [key, value] of urlParams.entries()) {
+      dataCheckString += `${key}=${value}\n`;
     }
+    dataCheckString = dataCheckString.slice(0, -1); // Remove last newline
 
-    return isValid;
-    
+    const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
+    const calculatedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+
+    return calculatedHash === hash;
   } catch (error) {
-    console.error('[TELEGRAM] Validation error:', error);
+    console.error('Error validating Telegram data:', error);
     return false;
   }
 }
 
-/**
- * HMAC-SHA256 باستخدام Web Crypto API
- */
-async function hmacSha256(key: string | ArrayBuffer, data: string): Promise<ArrayBuffer> {
-  const encoder = new TextEncoder();
-  
-  const cryptoKey = await crypto.subtle.importKey(
-    'raw',
-    typeof key === 'string' ? encoder.encode(key) : key,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-  
-  return await crypto.subtle.sign('HMAC', cryptoKey, encoder.encode(data));
-}
-
-/**
- * تحويل ArrayBuffer إلى Hex string
- */
-function bufferToHex(buffer: ArrayBuffer): string {
-  return Array.from(new Uint8Array(buffer))
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('');
-}
-
-/**
- * استخراج بيانات المستخدم من initData
- */
-export function parseInitData(initData: string): any | null {
+export function parseInitData(initData: string) {
   try {
     const urlParams = new URLSearchParams(initData);
     const userStr = urlParams.get('user');
-    
     if (userStr) {
       return JSON.parse(userStr);
     }
-    
-    // محاولة استخراج user من بيانات أخرى إذا كان التنسيق مختلفاً
-    const authDate = urlParams.get('auth_date');
-    const hash = urlParams.get('hash');
-    
-    console.log('[TELEGRAM] Parsed params:', { 
-      hasUser: !!userStr, 
-      authDate, 
-      hashLength: hash?.length 
-    });
-    
   } catch (e) {
-    console.error('[TELEGRAM] Error parsing initData:', e);
+    console.error('Error parsing user data:', e);
   }
-  
   return null;
-}
-
-/**
- * التحقق السريع (للاستخدام في middleware)
- */
-export async function quickValidate(initData: string): Promise<{
-  valid: boolean;
-  userId?: string;
-  error?: string;
-}> {
-  const isValid = await validateTelegramWebAppData(initData);
-  
-  if (!isValid) {
-    return { valid: false, error: 'Invalid Telegram signature' };
-  }
-  
-  const user = parseInitData(initData);
-  
-  if (!user?.id) {
-    return { valid: false, error: 'No user data found' };
-  }
-  
-  return { valid: true, userId: user.id.toString() };
 }
