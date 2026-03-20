@@ -7,7 +7,6 @@ export interface AdProtectionConfig {
   maxAdsPerDay: number;
   maxAdsPerHour: number;
   cooldownTiers: number[];
-  maxQuickRewards: number;
 }
 
 export interface AdWatchRecord {
@@ -17,6 +16,7 @@ export interface AdWatchRecord {
   watched_at: number;
   hour_bucket: number;
   date_str: string;
+  reward_given: number;
 }
 
 export interface AdProtectionResult {
@@ -27,22 +27,16 @@ export interface AdProtectionResult {
   remainingThisHour: number;
   currentTier: number;
   waitSeconds: number;
+  adsWatchedToday: number; // ✅ إضافة: العدد الفعلي من السيرفر
 }
 
 export const DEFAULT_PROTECTION_CONFIG: AdProtectionConfig = {
   maxAdsPerDay: 30,
   maxAdsPerHour: 5,
   cooldownTiers: [30, 60, 300, 600, 900], // 30s, 1m, 5m, 10m, 15m
-  maxQuickRewards: 3,
 };
 
-// ✅ إصلاح: Cache بسيط في الذاكرة (للـ Serverless)
-const userCache = new Map<string, {
-  data: any;
-  timestamp: number;
-}>();
-const CACHE_TTL = 30000; // 30 ثانية
-
+// ✅ إصلاح: مصدر واحد للحقيقة - قاعدة البيانات فقط
 export async function checkAdEligibility(
   telegramId: string,
   config: AdProtectionConfig = DEFAULT_PROTECTION_CONFIG
@@ -52,21 +46,42 @@ export async function checkAdEligibility(
   const currentHour = new Date(now).getHours();
 
   try {
-    // ✅ استخدام Query محسّن (index على telegram_id + date_str)
+    // ✅ قراءة العداد مباشرة من قاعدة البيانات (مصدر الحقيقة الوحيد)
+    const userResult = await queryD1<{ ads_watched_today: number; last_ad_watch_date: string }>(
+      `SELECT ads_watched_today, last_ad_watch_date 
+       FROM users 
+       WHERE telegram_id = ?`,
+      [telegramId]
+    );
+    
+    const user = userResult[0];
+    let adsWatchedToday = 0;
+    
+    // ✅ التحقق من أن العداد لليوم الحالي فقط
+    if (user && user.last_ad_watch_date) {
+      const lastDate = user.last_ad_watch_date.includes('T') 
+        ? user.last_ad_watch_date.split('T')[0]
+        : new Date(user.last_ad_watch_date).toISOString().split('T')[0];
+      
+      if (lastDate === todayStr) {
+        adsWatchedToday = user.ads_watched_today || 0;
+      }
+    }
+
+    // ✅ قراءة سجلات اليوم من ad_watch_logs للتحقق من الساعة
     const todayLogs = await queryD1<AdWatchRecord>(
-      `SELECT watched_at, hour_bucket, ad_type 
+      `SELECT watched_at, hour_bucket 
        FROM ad_watch_logs 
        WHERE telegram_id = ? AND date_str = ? AND ad_type != 'VIOLATION'
        ORDER BY watched_at DESC
-       LIMIT 50`, // ✅ تحديد LIMIT لتقليل القراءة
+       LIMIT 50`,
       [telegramId, todayStr]
     );
 
-    const adsToday = todayLogs.length;
     const adsThisHour = todayLogs.filter(log => log.hour_bucket === currentHour).length;
 
-    // Check daily limit (30 ads)
-    if (adsToday >= config.maxAdsPerDay) {
+    // ✅ التحقق من الحد اليومي (30 إعلان)
+    if (adsWatchedToday >= config.maxAdsPerDay) {
       return {
         allowed: false,
         reason: 'DAILY_LIMIT_REACHED',
@@ -74,10 +89,11 @@ export async function checkAdEligibility(
         remainingThisHour: Math.max(0, config.maxAdsPerHour - adsThisHour),
         currentTier: config.cooldownTiers.length - 1,
         waitSeconds: 0,
+        adsWatchedToday,
       };
     }
 
-    // Check hourly limit (5 ads)
+    // ✅ التحقق من الحد الساعي (5 إعلانات)
     if (adsThisHour >= config.maxAdsPerHour) {
       const nextHour = new Date(now);
       nextHour.setHours(currentHour + 1, 0, 0, 0);
@@ -86,30 +102,27 @@ export async function checkAdEligibility(
         allowed: false,
         reason: 'HOURLY_LIMIT_REACHED',
         nextAllowedAt: nextHour.getTime(),
-        remainingToday: config.maxAdsPerDay - adsToday,
+        remainingToday: config.maxAdsPerDay - adsWatchedToday,
         remainingThisHour: 0,
         currentTier: config.cooldownTiers.length - 1,
         waitSeconds: Math.ceil((nextHour.getTime() - now) / 1000),
+        adsWatchedToday,
       };
     }
 
-    // Calculate progressive cooldown
+    // ✅ حساب فترة الانتظار (Cooldown)
     let waitSeconds = 0;
     let currentTier = 0;
 
     if (todayLogs.length > 0) {
       const lastAd = todayLogs[0];
       const timeSinceLastAd = now - lastAd.watched_at;
-
-      // ✅ تحسين: حساب Tier بناءً على آخر ساعة فقط
       const oneHourAgo = now - (60 * 60 * 1000);
       const recentAds = todayLogs.filter(log => log.watched_at > oneHourAgo).length;
 
-      // Determine cooldown tier
       currentTier = Math.min(recentAds, config.cooldownTiers.length - 1);
       waitSeconds = config.cooldownTiers[currentTier];
 
-      // Check if enough time has passed
       if (timeSinceLastAd < waitSeconds * 1000) {
         const remainingWait = Math.ceil((waitSeconds * 1000 - timeSinceLastAd) / 1000);
 
@@ -117,24 +130,25 @@ export async function checkAdEligibility(
           allowed: false,
           reason: 'COOLDOWN_ACTIVE',
           nextAllowedAt: lastAd.watched_at + (waitSeconds * 1000),
-          remainingToday: config.maxAdsPerDay - adsToday,
+          remainingToday: config.maxAdsPerDay - adsWatchedToday,
           remainingThisHour: config.maxAdsPerHour - adsThisHour,
           currentTier,
           waitSeconds: remainingWait,
+          adsWatchedToday,
         };
       }
     }
 
     return {
       allowed: true,
-      remainingToday: config.maxAdsPerDay - adsToday - 1,
+      remainingToday: config.maxAdsPerDay - adsWatchedToday - 1,
       remainingThisHour: config.maxAdsPerHour - adsThisHour - 1,
       currentTier,
       waitSeconds: 0,
+      adsWatchedToday,
     };
   } catch (error) {
     console.error('Error in checkAdEligibility:', error);
-    // ✅ في حالة الخطأ، نمنع الإعلان لحماية النظام
     return {
       allowed: false,
       reason: 'SYSTEM_ERROR',
@@ -142,23 +156,25 @@ export async function checkAdEligibility(
       remainingThisHour: 0,
       currentTier: 0,
       waitSeconds: 60,
+      adsWatchedToday: 0,
     };
   }
 }
 
+// ✅ إصلاح: تسجيل الإعلان مرة واحدة فقط
 export async function logAdWatch(
   telegramId: string,
   adType: 'multiplier' | 'energy' | 'bot' | 'VIOLATION',
   rewardGiven: number = 1000,
   ipAddress?: string,
   userAgent?: string
-): Promise<void> {
+): Promise<{ success: boolean; newCount: number }> {
   const now = Date.now();
   const todayStr = new Date(now).toISOString().split('T')[0];
   const currentHour = new Date(now).getHours();
   const id = crypto.randomUUID();
 
-  // ✅ استخدام Transaction لتقليل عدد الـ Requests
+  // ✅ استخدام Transaction لضمان التسجيل مرة واحدة
   await executeD1(
     `INSERT INTO ad_watch_logs 
      (id, telegram_id, ad_type, watched_at, hour_bucket, date_str, reward_given, ip_address, user_agent)
@@ -166,16 +182,50 @@ export async function logAdWatch(
     [id, telegramId, adType, now, currentHour, todayStr, rewardGiven, ipAddress || null, userAgent || null]
   );
 
-  // ✅ تحديث الـ Cache
-  userCache.delete(telegramId);
+  // ✅ تحديث العداد مباشرة (بدون قراءة سابقة لتجنب race condition)
+  const updateResult = await executeD1(
+    `UPDATE users SET 
+      ads_watched_today = CASE 
+        WHEN last_ad_watch_date = ? THEN ads_watched_today + 1
+        ELSE 1
+      END,
+      last_ad_watch_date = ?
+     WHERE telegram_id = ?
+     RETURNING ads_watched_today`,
+    [todayStr, todayStr, telegramId]
+  );
+
+  const newCount = updateResult.results?.[0]?.ads_watched_today || 0;
+  
+  return { success: true, newCount };
 }
 
+// ✅ إصلاح: إحصائيات دقيقة من السيرفر فقط
 export async function getUserAdStats(telegramId: string) {
   const now = Date.now();
   const todayStr = new Date(now).toISOString().split('T')[0];
   const currentHour = new Date(now).getHours();
 
-  // ✅ استخدام Query واحد بدلاً من اثنين
+  // ✅ قراءة العداد من المستخدم
+  const userResult = await queryD1<{ ads_watched_today: number; last_ad_watch_date: string }>(
+    `SELECT ads_watched_today, last_ad_watch_date 
+     FROM users 
+     WHERE telegram_id = ?`,
+    [telegramId]
+  );
+  
+  let adsWatchedToday = 0;
+  if (userResult[0]?.last_ad_watch_date) {
+    const lastDate = userResult[0].last_ad_watch_date.includes('T')
+      ? userResult[0].last_ad_watch_date.split('T')[0]
+      : new Date(userResult[0].last_ad_watch_date).toISOString().split('T')[0];
+    
+    if (lastDate === todayStr) {
+      adsWatchedToday = userResult[0].ads_watched_today || 0;
+    }
+  }
+
+  // ✅ قراءة السجلات للتحقق من الساعة والـ Cooldown
   const todayLogs = await queryD1<AdWatchRecord>(
     `SELECT watched_at, hour_bucket 
      FROM ad_watch_logs 
@@ -185,10 +235,10 @@ export async function getUserAdStats(telegramId: string) {
     [telegramId, todayStr]
   );
 
-  const lastAd = todayLogs[0] || null;
   const adsThisHour = todayLogs.filter(log => log.hour_bucket === currentHour).length;
+  const lastAd = todayLogs[0] || null;
 
-  // Calculate time until next ad
+  // حساب وقت الانتظار
   let nextAdInSeconds = 0;
   if (lastAd) {
     const config = DEFAULT_PROTECTION_CONFIG;
@@ -205,9 +255,9 @@ export async function getUserAdStats(telegramId: string) {
   }
 
   return {
-    totalToday: todayLogs.length,
+    totalToday: adsWatchedToday, // ✅ من قاعدة البيانات مباشرة
     thisHour: adsThisHour,
-    remainingToday: Math.max(0, 30 - todayLogs.length),
+    remainingToday: Math.max(0, 30 - adsWatchedToday),
     remainingThisHour: Math.max(0, 5 - adsThisHour),
     lastAdAt: lastAd?.watched_at || null,
     nextAdInSeconds,
@@ -222,7 +272,6 @@ export async function detectSuspiciousActivity(telegramId: string): Promise<{
   const now = Date.now();
   const fiveMinutesAgo = now - (5 * 60 * 1000);
 
-  // ✅ Query محسّن: استخدام COUNT بدلاً من SELECT *
   const countResult = await queryD1<{ count: number }>(
     `SELECT COUNT(*) as count 
      FROM ad_watch_logs 
@@ -232,7 +281,6 @@ export async function detectSuspiciousActivity(telegramId: string): Promise<{
 
   const recentCount = countResult[0]?.count || 0;
 
-  // More than 5 ads in 5 minutes = suspicious
   if (recentCount > 5) {
     return {
       isSuspicious: true,
@@ -240,7 +288,6 @@ export async function detectSuspiciousActivity(telegramId: string): Promise<{
     };
   }
 
-  // ✅ فحص إضافي فقط إذا كان العدد > 3
   if (recentCount > 3) {
     const recentLogs = await queryD1<AdWatchRecord>(
       `SELECT watched_at 
@@ -253,7 +300,7 @@ export async function detectSuspiciousActivity(telegramId: string): Promise<{
 
     for (let i = 0; i < recentLogs.length - 1; i++) {
       const diff = recentLogs[i].watched_at - recentLogs[i + 1].watched_at;
-      if (diff < 15000) { // Less than 15 seconds
+      if (diff < 15000) {
         return {
           isSuspicious: true,
           reason: `IMPOSSIBLE_AD_SPEED: ${(diff / 1000).toFixed(3)} seconds between ads`,
@@ -280,7 +327,6 @@ export async function recordViolation(
     violationType
   );
   
-  // ✅ استخدام COUNT
   const violations = await queryD1<{ count: number }>(
     `SELECT COUNT(*) as count 
      FROM ad_watch_logs 
