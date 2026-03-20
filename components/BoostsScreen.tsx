@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useGame } from './GameProvider';
 import { Zap, BatteryCharging, Bot, PlaySquare, Loader2, Coins, Clock, AlertTriangle } from 'lucide-react';
 
@@ -16,23 +16,42 @@ export function BoostsScreen() {
     tapMultiplier,
     energy,
     maxEnergy,
-    adProtection
+    adProtection,
+    checkAdEligibility
   } = useGame();
 
   const [loadingBoostId, setLoadingBoostId] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [localCooldown, setLocalCooldown] = useState(0);
 
+  // Update timer every second
   useEffect(() => {
-    const interval = setInterval(() => setNow(Date.now()), 1000);
+    const interval = setInterval(() => {
+      setNow(Date.now());
+      setLocalCooldown(prev => Math.max(0, prev - 1));
+    }, 1000);
     return () => clearInterval(interval);
   }, []);
+
+  // Sync local cooldown with server data
+  useEffect(() => {
+    if (adProtection?.waitSeconds && adProtection.waitSeconds > 0) {
+      setLocalCooldown(adProtection.waitSeconds);
+    }
+  }, [adProtection?.waitSeconds]);
 
   const isMultiplierActive = tapMultiplierEndTime > now;
   const isBotActive = autoBotActiveUntil > now;
   const isEnergyFull = energy >= maxEnergy;
 
-  const nextAdWaitSeconds = adProtection?.nextAdInSeconds || 0;
-  const canWatchAd = adProtection?.isAllowed && nextAdWaitSeconds === 0;
+  // Use local cooldown or server value
+  const effectiveWaitSeconds = localCooldown > 0 ? localCooldown : (adProtection?.nextAdInSeconds || 0);
+  const canWatchAd = adProtection?.isAllowed && effectiveWaitSeconds === 0;
+
+  // Calculate ads watched (not remaining)
+  const adsWatchedCount = adProtection ? (30 - adProtection.remainingToday) : adsWatchedToday;
+  const adsRemainingToday = adProtection?.remainingToday ?? (30 - adsWatchedToday);
+  const adsRemainingThisHour = adProtection?.remainingThisHour ?? 5;
 
   const formatTimeLeft = (endTime: number) => {
     const diff = Math.max(0, endTime - now);
@@ -49,21 +68,24 @@ export function BoostsScreen() {
   };
 
   const formatWaitTime = (seconds: number) => {
+    if (seconds <= 0) return 'Ready';
     if (seconds < 60) return `${seconds}s`;
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
-    return `${mins}m ${secs}s`;
+    return `${mins}m ${secs.toString().padStart(2, '0')}s`;
   };
 
-  const handleWatchAd = async (id: string, action: () => Promise<void>) => {
-    if (!canWatchAd && nextAdWaitSeconds > 0) {
+  const handleWatchAd = useCallback(async (id: string, action: () => Promise<void>) => {
+    if (!canWatchAd && effectiveWaitSeconds > 0) {
       return;
     }
     
     setLoadingBoostId(id);
     await action();
+    // Refresh ad eligibility immediately after watching
+    await checkAdEligibility();
     setLoadingBoostId(null);
-  };
+  }, [canWatchAd, effectiveWaitSeconds, checkAdEligibility]);
 
   const boosts = [
     {
@@ -78,7 +100,7 @@ export function BoostsScreen() {
       isActive: isMultiplierActive,
       statusText: isMultiplierActive ? `Active (${formatTimeLeft(tapMultiplierEndTime)})` : 'Available',
       buttonText: isMultiplierActive ? 'Working...' : 'Watch Ad',
-      disabled: isMultiplierActive || isWatchingAd || !canWatchAd,
+      disabled: isMultiplierActive || isWatchingAd || !canWatchAd || effectiveWaitSeconds > 0,
       instantReward: '+1000 Coins',
       bonusReward: 'x4 Taps for 5 minutes',
       rewardIcon: <Zap size={12} className="text-orange-400" />
@@ -95,7 +117,7 @@ export function BoostsScreen() {
       isActive: false,
       statusText: isEnergyFull ? 'Energy Full' : 'Available',
       buttonText: 'Watch Ad',
-      disabled: isEnergyFull || isWatchingAd || !canWatchAd,
+      disabled: isEnergyFull || isWatchingAd || !canWatchAd || effectiveWaitSeconds > 0,
       instantReward: '+1000 Coins',
       bonusReward: 'Full Energy Instantly',
       rewardIcon: <BatteryCharging size={12} className="text-green-400" />
@@ -110,14 +132,17 @@ export function BoostsScreen() {
       borderColor: 'border-blue-500/30',
       action: watchAdForBot,
       isActive: isBotActive,
-      statusText: isBotActive ? `Active (${formatHoursLeft(autoBotActiveUntil)})` : `${adsWatchedToday}/30 Daily`,
+      statusText: isBotActive ? `Active (${formatHoursLeft(autoBotActiveUntil)})` : `${adsWatchedCount}/30 Today`,
       buttonText: isBotActive ? 'Working...' : 'Watch Ad',
-      disabled: isBotActive || isWatchingAd || !canWatchAd,
+      disabled: isBotActive || isWatchingAd || !canWatchAd || effectiveWaitSeconds > 0,
       instantReward: '+1000 Coins',
       bonusReward: 'Auto Bot for 6 Hours',
       rewardIcon: <Bot size={12} className="text-blue-400" />
     }
   ];
+
+  // Calculate progress percentage correctly
+  const progressPercentage = Math.min(100, Math.max(0, (adsWatchedCount / 30) * 100));
 
   return (
     <div className="w-full h-full pb-28 pt-8 px-5 overflow-y-auto">
@@ -126,40 +151,80 @@ export function BoostsScreen() {
         <p className="text-zinc-400 text-sm">Watch short ads and get instant rewards and powerful features!</p>
       </div>
 
+      {/* Ad Status Card */}
       {adProtection && (
         <div className="mb-6 bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-4">
           <div className="flex items-center justify-between mb-3">
-            <span className="text-sm text-zinc-400">Daily Ads</span>
-            <span className="text-sm font-bold text-white">{30 - (adProtection.remainingToday || 0)} / 30</span>
+            <span className="text-sm text-zinc-400">Daily Ads Watched</span>
+            <span className="text-sm font-bold text-white">{adsWatchedCount} / 30</span>
           </div>
-          <div className="w-full bg-white/10 rounded-full h-2 mb-3">
+          
+          {/* Progress Bar */}
+          <div className="w-full bg-white/10 rounded-full h-2 mb-3 overflow-hidden">
             <div 
-              className="bg-gradient-to-r from-blue-500 to-cyan-500 h-2 rounded-full transition-all"
-              style={{ width: `${((30 - (adProtection.remainingToday || 0)) / 30) * 100}%` }}
+              className={`h-2 rounded-full transition-all duration-500 ${
+                adsWatchedCount >= 30 
+                  ? 'bg-red-500' 
+                  : adsWatchedCount >= 25 
+                    ? 'bg-orange-500' 
+                    : 'bg-gradient-to-r from-blue-500 to-cyan-500'
+              }`}
+              style={{ width: `${progressPercentage}%` }}
             />
           </div>
           
-          <div className="flex items-center justify-between text-xs">
+          <div className="flex items-center justify-between text-xs mb-2">
             <span className="text-zinc-500">
-              This Hour: {5 - (adProtection.remainingThisHour || 0)} / 5
+              This Hour: {Math.max(0, 5 - adsRemainingThisHour)} / 5 watched
             </span>
-            {nextAdWaitSeconds > 0 && (
-              <span className="text-orange-400 flex items-center gap-1">
+            <span className={`font-medium ${
+              adsRemainingToday <= 5 ? 'text-red-400' : 'text-zinc-400'
+            }`}>
+              {adsRemainingToday} remaining today
+            </span>
+          </div>
+
+          {/* Countdown Timer */}
+          {effectiveWaitSeconds > 0 && (
+            <div className="mt-3 pt-3 border-t border-white/10 flex items-center justify-between">
+              <span className="text-xs text-orange-400 flex items-center gap-1">
                 <Clock size={12} />
-                Wait {formatWaitTime(nextAdWaitSeconds)}
+                Next ad available in:
               </span>
-            )}
+              <span className="text-sm font-bold text-orange-300 font-mono">
+                {formatWaitTime(effectiveWaitSeconds)}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Cooldown Warning */}
+      {effectiveWaitSeconds > 0 && (
+        <div className="mb-6 bg-orange-500/10 border border-orange-500/30 rounded-2xl p-4 flex items-center gap-3 animate-pulse">
+          <AlertTriangle size={24} className="text-orange-400 shrink-0" />
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-orange-300">Cooldown Active</p>
+            <p className="text-xs text-orange-400/70">
+              Please wait {formatWaitTime(effectiveWaitSeconds)} before watching another ad
+            </p>
+          </div>
+          <div className="text-right">
+            <span className="text-lg font-bold text-orange-400 font-mono">
+              {formatWaitTime(effectiveWaitSeconds)}
+            </span>
           </div>
         </div>
       )}
 
-      {!canWatchAd && nextAdWaitSeconds > 0 && (
-        <div className="mb-6 bg-orange-500/10 border border-orange-500/30 rounded-2xl p-4 flex items-center gap-3">
-          <AlertTriangle size={24} className="text-orange-400 shrink-0" />
+      {/* Daily Limit Reached Warning */}
+      {adsRemainingToday <= 0 && (
+        <div className="mb-6 bg-red-500/10 border border-red-500/30 rounded-2xl p-4 flex items-center gap-3">
+          <AlertTriangle size={24} className="text-red-400 shrink-0" />
           <div>
-            <p className="text-sm font-semibold text-orange-300">Cooldown Active</p>
-            <p className="text-xs text-orange-400/70">
-              Please wait {formatWaitTime(nextAdWaitSeconds)} between ads to protect the system
+            <p className="text-sm font-semibold text-red-300">Daily Limit Reached</p>
+            <p className="text-xs text-red-400/70">
+              You have watched all 30 ads for today. Come back tomorrow!
             </p>
           </div>
         </div>
@@ -173,7 +238,9 @@ export function BoostsScreen() {
           return (
             <div 
               key={boost.id}
-              className={`bg-white/5 backdrop-blur-xl border ${boost.borderColor} rounded-3xl p-5 flex flex-col gap-4 relative overflow-hidden shadow-lg transition-all duration-300 ${isDisabled ? 'opacity-60' : 'hover:bg-white/[0.07]'}`}
+              className={`bg-white/5 backdrop-blur-xl border ${boost.borderColor} rounded-3xl p-5 flex flex-col gap-4 relative overflow-hidden shadow-lg transition-all duration-300 ${
+                isDisabled ? 'opacity-60' : 'hover:bg-white/[0.07]'
+              }`}
             >
               <div className={`absolute -top-10 -right-10 w-40 h-40 bg-gradient-to-br ${boost.color} blur-3xl opacity-40 pointer-events-none`} />
               
@@ -184,7 +251,11 @@ export function BoostsScreen() {
                 <div className="flex-1">
                   <div className="flex justify-between items-start mb-1.5">
                     <h3 className="font-bold text-xl text-white tracking-tight">{boost.title}</h3>
-                    <span className={`text-[10px] font-bold px-2.5 py-1 rounded-lg uppercase tracking-wider ${boost.isActive ? 'bg-green-500/20 text-green-400 border border-green-500/30 animate-pulse' : 'bg-white/10 text-zinc-300'}`}>
+                    <span className={`text-[10px] font-bold px-2.5 py-1 rounded-lg uppercase tracking-wider ${
+                      boost.isActive 
+                        ? 'bg-green-500/20 text-green-400 border border-green-500/30 animate-pulse' 
+                        : 'bg-white/10 text-zinc-300'
+                    }`}>
                       {boost.statusText}
                     </span>
                   </div>
@@ -227,9 +298,9 @@ export function BoostsScreen() {
                 {isLoading ? (
                   <Loader2 size={18} className="animate-spin" />
                 ) : (
-                  !boost.disabled && <PlaySquare size={18} />
+                  !isDisabled && <PlaySquare size={18} />
                 )}
-                {isLoading ? 'Loading...' : boost.buttonText}
+                {isLoading ? 'Loading...' : effectiveWaitSeconds > 0 ? `Wait ${formatWaitTime(effectiveWaitSeconds)}` : boost.buttonText}
               </button>
             </div>
           );
