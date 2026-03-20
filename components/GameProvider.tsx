@@ -5,7 +5,6 @@ import { AdModal } from './AdModal';
 import { Loader2, AlertCircle } from 'lucide-react';
 import { useTonWallet } from '@tonconnect/ui-react';
 
-// --- Types ---
 declare global {
   interface Window {
     Telegram?: {
@@ -43,6 +42,13 @@ interface GameState {
   referralsActivated: number;
   referralCoinsEarned: number;
   adsgramBlockId: string | null;
+  adProtection: {
+    remainingToday: number;
+    remainingThisHour: number;
+    nextAdInSeconds: number;
+    isAllowed: boolean;
+    waitSeconds: number;
+  } | null;
 }
 
 interface GameContextType extends GameState {
@@ -55,15 +61,28 @@ interface GameContextType extends GameState {
   isWatchingAd: boolean;
   claimReferralReward: () => void;
   refreshUserData: () => Promise<void>;
+  checkAdEligibility: () => Promise<void>;
 }
 
 const defaultState: GameState = {
-  coins: 0, challengeCoins: 0, energy: 500, maxEnergy: 500,
-  tapMultiplier: 1, tapMultiplierEndTime: 0, autoBotActiveUntil: 0,
-  adsWatchedToday: 0, lastAdWatchDate: new Date().toISOString().split('T')[0],
-  lastUpdateTime: Date.now(), totalTaps: 0, walletConnected: false,
-  walletAddress: null, referralsCount: 0, referralsActivated: 0,
-  referralCoinsEarned: 0, adsgramBlockId: null,
+  coins: 0, 
+  challengeCoins: 0, 
+  energy: 500, 
+  maxEnergy: 500,
+  tapMultiplier: 1, 
+  tapMultiplierEndTime: 0, 
+  autoBotActiveUntil: 0,
+  adsWatchedToday: 0, 
+  lastAdWatchDate: new Date().toISOString().split('T')[0],
+  lastUpdateTime: Date.now(), 
+  totalTaps: 0, 
+  walletConnected: false,
+  walletAddress: null, 
+  referralsCount: 0, 
+  referralsActivated: 0,
+  referralCoinsEarned: 0, 
+  adsgramBlockId: null,
+  adProtection: null,
 };
 
 const GameContext = createContext<GameContextType | null>(null);
@@ -82,13 +101,23 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
   const [error, setError] = useState<string | null>(null);
   const wallet = useTonWallet();
 
-  const [fallbackAd, setFallbackAd] = useState<{ isOpen: boolean; title: string; description: string; resolve: ((value: boolean) => void) | null; }>({ isOpen: false, title: '', description: '', resolve: null });
+  const [fallbackAd, setFallbackAd] = useState<{ 
+    isOpen: boolean; 
+    title: string; 
+    description: string; 
+    resolve: ((value: boolean) => void) | null; 
+  }>({ 
+    isOpen: false, 
+    title: '', 
+    description: '', 
+    resolve: null 
+  });
 
   const tapQueue = useRef<{ t: number; a: number }[]>([]);
   const isSyncing = useRef(false);
   const lastTapTimeRef = useRef<number>(0);
+  const adCheckInterval = useRef<NodeJS.Timeout | null>(null);
 
-  // ✅ دالة محدثة خارج useEffect لتكون متاحة للجميع
   const updateStateFromServer = useCallback((data: any) => {
     setState(prev => ({
       ...prev,
@@ -109,59 +138,103 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
       referralsActivated: data.user.referralsActivated || 0,
       referralCoinsEarned: data.user.referralCoinsEarned || 0,
       adsgramBlockId: data.settings?.adsgramBlockId || null,
+      adProtection: data.meta?.adProtection || null,
     }));
     setCompletedTasks(data.user.completedTasks || []);
     setIsLoaded(true);
   }, []);
 
+  const checkAdEligibility = useCallback(async () => {
+    if (!isLoaded) return;
+    
+    try {
+      const initData = window.Telegram?.WebApp?.initData;
+      if (!initData) return;
+
+      const response = await fetch('/api/ad-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData }),
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setState(prev => ({
+          ...prev,
+          adProtection: {
+            remainingToday: data.remainingToday,
+            remainingThisHour: data.remainingThisHour,
+            nextAdInSeconds: data.nextAdInSeconds || 0,
+            isAllowed: data.isAllowed,
+            waitSeconds: data.waitSeconds || 0
+          }
+        }));
+      }
+    } catch (e) {
+      console.error("Ad eligibility check failed", e);
+    }
+  }, [isLoaded]);
+
   useEffect(() => {
     const initApp = async () => {
       try {
         if (typeof window === 'undefined' || !window.Telegram?.WebApp) {
-          const mockInitData = "user=%7B%22id%22%3A123456%2C%22first_name%22%3A%22Test%22%7D&hash=mock";
+          setError('This app must be opened from Telegram');
+          return;
         }
 
-        const webApp = window.Telegram?.WebApp;
-        if(webApp) {
-            webApp.expand();
-            webApp.ready();
+        const webApp = window.Telegram.WebApp;
+        webApp.expand();
+        webApp.ready();
+
+        const initData = webApp.initData;
+        const user = webApp.initDataUnsafe.user;
+        const referralCode = webApp.initDataUnsafe.start_param;
+
+        if (!user) {
+          setError('No user data available');
+          return;
         }
 
-        const initData = webApp?.initData || ""; 
-        const user = webApp?.initDataUnsafe.user;
-        const referralCode = webApp?.initDataUnsafe.start_param;
-
-        const telegramId = user?.id.toString() || "123456";
-
-        if (!user && !process.env.NEXT_PUBLIC_DEV_MODE) {
+        const response = await fetch('/api/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData, referralCode }),
+        });
+        
+        if (!response.ok) {
+          throw new Error('Authentication failed');
         }
-
-        if (webApp && initData) {
-             const response = await fetch('/api/auth', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ initData, referralCode }),
-            });
-            
-            if (response.ok) {
-                const data = await response.json();
-                updateStateFromServer(data);
-            } else {
-            }
-        } else {
-            setIsLoaded(true);
-        }
+        
+        const data = await response.json();
+        updateStateFromServer(data);
 
       } catch (err) {
         console.error('Init error:', err);
-        setError('An unexpected error occurred.');
+        setError('Failed to initialize app');
       }
     };
 
     initApp();
   }, [updateStateFromServer]);
 
-  const syncWithSupabase = useCallback(async (adWatchedType?: string) => {
+  useEffect(() => {
+    if (!isLoaded) return;
+    
+    checkAdEligibility();
+    
+    adCheckInterval.current = setInterval(() => {
+      checkAdEligibility();
+    }, 60000);
+    
+    return () => {
+      if (adCheckInterval.current) {
+        clearInterval(adCheckInterval.current);
+      }
+    };
+  }, [isLoaded, checkAdEligibility]);
+
+  const syncWithServer = useCallback(async (adWatchedType?: string) => {
     if (!isLoaded || (tapQueue.current.length === 0 && !adWatchedType) || isSyncing.current) return;
     isSyncing.current = true;
 
@@ -170,12 +243,12 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
 
     try {
       const initData = window.Telegram?.WebApp?.initData;
-      if (!initData && !process.env.NEXT_PUBLIC_DEV_MODE) throw new Error('No initData');
+      if (!initData) throw new Error('No initData');
 
       const payload = {
-          initData: initData || "mock_data",
-          taps: tapsToSync,
-          adWatchedType,
+        initData,
+        taps: tapsToSync,
+        adWatchedType,
       };
 
       const response = await fetch('/api/sync', {
@@ -184,11 +257,29 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
         body: JSON.stringify(payload),
       });
 
-      if (!response.ok) throw new Error('Sync failed');
+      if (!response.ok) {
+        const errorData = await response.json();
+        if (errorData.code === 'COOLDOWN_ACTIVE' || 
+            errorData.code === 'HOURLY_LIMIT_REACHED' || 
+            errorData.code === 'DAILY_LIMIT_REACHED' ||
+            errorData.code === 'SUSPICIOUS_ACTIVITY') {
+          setState(prev => ({
+            ...prev,
+            adProtection: {
+              remainingToday: errorData.details?.remainingToday || 0,
+              remainingThisHour: errorData.details?.remainingThisHour || 0,
+              nextAdInSeconds: errorData.details?.waitSeconds || 0,
+              isAllowed: false,
+              waitSeconds: errorData.details?.waitSeconds || 0
+            }
+          }));
+          throw new Error(errorData.error);
+        }
+        throw new Error('Sync failed');
+      }
 
       const data = await response.json();
       
-      // ✅ تحديث كامل للـ state من السيرفر
       setState(prev => ({
         ...prev,
         coins: data.user.coins,
@@ -199,6 +290,7 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
         tapMultiplierEndTime: data.user.tapMultiplierEndTime,
         autoBotActiveUntil: data.user.autoBotActiveUntil,
         adsWatchedToday: data.user.adsWatchedToday,
+        adProtection: data.meta?.adProtection || null,
         lastUpdateTime: Date.now(),
       }));
 
@@ -211,12 +303,13 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
   }, [isLoaded]);
 
   useEffect(() => {
-    const interval = setInterval(() => syncWithSupabase(), 5000);
+    const interval = setInterval(() => syncWithServer(), 5000);
     return () => clearInterval(interval);
-  }, [syncWithSupabase]);
+  }, [syncWithServer]);
 
   useEffect(() => {
     if (!isLoaded) return;
+    
     const interval = setInterval(() => {
       setState(prev => {
         const now = Date.now();
@@ -227,8 +320,8 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
         const timePassedSec = Math.max(0, (now - prev.lastUpdateTime) / 1000);
         
         if (prev.energy < prev.maxEnergy) {
-            const regenRate = prev.maxEnergy / 1800;
-            newEnergy = Math.min(prev.maxEnergy, prev.energy + (timePassedSec * regenRate));
+          const regenRate = prev.maxEnergy / 1800;
+          newEnergy = Math.min(prev.maxEnergy, prev.energy + (timePassedSec * regenRate));
         }
 
         if (prev.autoBotActiveUntil > now) {
@@ -243,14 +336,14 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
         }
 
         if (newEnergy !== prev.energy || newCoins !== prev.coins || newMultiplier !== prev.tapMultiplier) {
-            return {
-                ...prev,
-                coins: newCoins,
-                challengeCoins: newChallengeCoins,
-                energy: newEnergy,
-                tapMultiplier: newMultiplier,
-                lastUpdateTime: now,
-            };
+          return {
+            ...prev,
+            coins: newCoins,
+            challengeCoins: newChallengeCoins,
+            energy: newEnergy,
+            tapMultiplier: newMultiplier,
+            lastUpdateTime: now,
+          };
         }
         return prev;
       });
@@ -259,12 +352,10 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
     return () => clearInterval(interval);
   }, [isLoaded]);
 
-  // ✅ إصلاح مشكلة النقرة المزدوجة - زيادة الفترة إلى 100ms
   const tap = useCallback((amount: number) => {
     const now = Date.now();
-    // زيادة الفترة إلى 100 ملي ثانية للتأكد من عدم تسجيل النقرة المزدوجة
     if (now - lastTapTimeRef.current < 100) {
-      return false; 
+      return false;
     }
     
     let success = false;
@@ -298,7 +389,12 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
     setIsWatchingAd(true);
     try {
       if (window.Adsgram) {
-        const blockId = state.adsgramBlockId || process.env.NEXT_PUBLIC_ADSGRAM_BLOCK_ID || 'test-block-id';
+        const blockId = state.adsgramBlockId || process.env.NEXT_PUBLIC_ADSGRAM_BLOCK_ID;
+        if (!blockId) {
+          console.error('No Adsgram block ID configured');
+          return false;
+        }
+        
         const AdController = window.Adsgram.init({ blockId });
         try {
           await AdController.show();
@@ -317,17 +413,35 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
     }
   };
 
-  // ✅ إصلاح: تحديث فوري للـ state بعد مشاهدة الإعلان
+  const validateAdEligibility = async (): Promise<boolean> => {
+    if (!state.adProtection) {
+      await checkAdEligibility();
+    }
+    
+    const protection = state.adProtection;
+    if (!protection) return false;
+    
+    if (!protection.isAllowed || protection.nextAdInSeconds > 0) {
+      return false;
+    }
+    
+    return true;
+  };
+
   const watchAdForMultiplier = async () => {
-    // التحقق من عدم وجود مضاعف نشط بالفعل
+    const isEligible = await validateAdEligibility();
+    if (!isEligible) {
+      console.warn('Ad not eligible:', state.adProtection);
+      return;
+    }
+
     if (state.tapMultiplierEndTime > Date.now()) return;
 
-    const success = await showAd('Quad Strike (x4)', 'شاهد الإعلان للحصول على ضرب 4 للنقر لمدة 5 دقائق + 1000 عملة فورية!');
+    const success = await showAd('Quad Strike (x4)', 'Watch ad to get 4x tap multiplier for 5 minutes + 1000 instant coins!');
     if (success) {
       const now = Date.now();
       const newEndTime = now + 5 * 60 * 1000;
       
-      // ✅ تحديث فوري للـ state قبل المزامنة
       setState(prev => ({
         ...prev,
         tapMultiplier: 4,
@@ -337,14 +451,21 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
         lastUpdateTime: now
       }));
       
-      // ✅ مزامنة مع الخادم
-      await syncWithSupabase('multiplier');
+      await syncWithServer('multiplier');
+      await checkAdEligibility();
     }
   };
 
   const watchAdForEnergy = async () => {
+    const isEligible = await validateAdEligibility();
+    if (!isEligible) {
+      console.warn('Ad not eligible:', state.adProtection);
+      return;
+    }
+
     if (state.energy >= state.maxEnergy) return;
-    const success = await showAd('Full Energy Refill', 'شاهد الإعلان لاستعادة الطاقة كاملة + 1000 عملة فورية!');
+    
+    const success = await showAd('Full Energy Refill', 'Watch ad to restore full energy instantly + 1000 instant coins!');
     if (success) {
       setState(prev => ({
         ...prev,
@@ -353,12 +474,19 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
         challengeCoins: prev.challengeCoins + 1000,
         lastUpdateTime: Date.now()
       }));
-      await syncWithSupabase('energy');
+      await syncWithServer('energy');
+      await checkAdEligibility();
     }
   };
 
   const watchAdForBot = async () => {
-    const success = await showAd('Auto-Tap Bot', 'شاهد الإعلان لتفعيل البوت لمدة 6 ساعات + 1000 عملة فورية!');
+    const isEligible = await validateAdEligibility();
+    if (!isEligible) {
+      console.warn('Ad not eligible:', state.adProtection);
+      return;
+    }
+
+    const success = await showAd('Auto-Tap Bot', 'Watch ad to activate auto-tap bot for 6 hours + 1000 instant coins!');
     if (success) {
       const now = Date.now();
       setState(prev => ({
@@ -368,54 +496,71 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
         challengeCoins: prev.challengeCoins + 1000,
         lastUpdateTime: now
       }));
-      await syncWithSupabase('bot');
+      await syncWithServer('bot');
+      await checkAdEligibility();
     }
   };
 
   const claimTask = useCallback(async (reward: number, taskId: string) => {
     if (completedTasks.includes(taskId)) return;
     try {
-      const initData = window.Telegram?.WebApp?.initData || "mock";
+      const initData = window.Telegram?.WebApp?.initData;
+      if (!initData) return;
+      
       const response = await fetch('/api/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ initData, taskId }),
       });
+      
       if (response.ok) {
         const data = await response.json();
         setCompletedTasks(data.user.completed_tasks || []);
-        setState(prev => ({ ...prev, coins: data.user.coins, challengeCoins: data.user.challenge_coins || 0 }));
+        setState(prev => ({ 
+          ...prev, 
+          coins: data.user.coins, 
+          challengeCoins: data.user.challenge_coins || 0 
+        }));
       }
-    } catch (e) { console.error(e); }
+    } catch (e) { 
+      console.error(e); 
+    }
   }, [completedTasks]);
 
   const claimReferralReward = useCallback(() => {
     setState(prev => ({
-      ...prev, coins: prev.coins + 1500, challengeCoins: prev.challengeCoins + 1500,
+      ...prev, 
+      coins: prev.coins + 1500, 
+      challengeCoins: prev.challengeCoins + 1500,
       referralCoinsEarned: prev.referralCoinsEarned + 1500,
     }));
   }, []);
 
-  // ✅ دالة لإعادة جلب البيانات من السيرفر
   const refreshUserData = async () => {
-      if(!isLoaded) return;
-      const initData = window.Telegram?.WebApp?.initData || "mock";
-      const referralCode = window.Telegram?.WebApp?.initDataUnsafe.start_param;
+    if (!isLoaded) return;
+    
+    const initData = window.Telegram?.WebApp?.initData;
+    const referralCode = window.Telegram?.WebApp?.initDataUnsafe.start_param;
+    
+    if (!initData) return;
+    
+    try {
+      const response = await fetch('/api/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, referralCode }),
+      });
       
-      try {
-        const response = await fetch('/api/auth', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ initData, referralCode }),
-        });
-        if(response.ok) {
-            const data = await response.json();
-            updateStateFromServer(data);
-        }
-      } catch(e) { console.error("Refresh failed", e); }
+      if (response.ok) {
+        const data = await response.json();
+        updateStateFromServer(data);
+      }
+    } catch (e) { 
+      console.error("Refresh failed", e); 
+    }
   };
 
-  if (error && !process.env.NEXT_PUBLIC_DEV_MODE) {
+  if (error) {
     return (
       <div className="min-h-screen bg-[#050505] flex flex-col items-center justify-center text-white p-6 text-center">
         <AlertCircle className="text-red-500 mb-4" size={64} />
@@ -425,7 +570,7 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
     );
   }
 
-  if (!isLoaded && !process.env.NEXT_PUBLIC_DEV_MODE) {
+  if (!isLoaded) {
     return (
       <div className="min-h-screen bg-[#050505] flex items-center justify-center text-white">
         <Loader2 className="animate-spin text-yellow-500" size={48} />
@@ -435,14 +580,28 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
 
   return (
     <GameContext.Provider value={{
-      ...state, tap, watchAdForMultiplier, watchAdForEnergy, watchAdForBot,
-      claimTask, completedTasks, isWatchingAd, claimReferralReward, refreshUserData
+      ...state, 
+      tap, 
+      watchAdForMultiplier, 
+      watchAdForEnergy, 
+      watchAdForBot,
+      claimTask, 
+      completedTasks, 
+      isWatchingAd, 
+      claimReferralReward, 
+      refreshUserData,
+      checkAdEligibility
     }}>
       {children}
-      <AdModal isOpen={fallbackAd.isOpen} title={fallbackAd.title} description={fallbackAd.description} onComplete={(success) => {
-        setFallbackAd(prev => ({ ...prev, isOpen: false }));
-        if (fallbackAd.resolve) fallbackAd.resolve(success);
-      }} />
+      <AdModal 
+        isOpen={fallbackAd.isOpen} 
+        title={fallbackAd.title} 
+        description={fallbackAd.description} 
+        onComplete={(success) => {
+          setFallbackAd(prev => ({ ...prev, isOpen: false }));
+          if (fallbackAd.resolve) fallbackAd.resolve(success);
+        }} 
+      />
     </GameContext.Provider>
   );
 };
