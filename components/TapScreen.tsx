@@ -3,7 +3,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useGame } from './GameProvider';
-import { Zap, Bot, ShieldAlert, Sparkles } from 'lucide-react';
+import { Zap, Bot, ShieldAlert } from 'lucide-react';
 
 interface FloatingNumber {
   id: number;
@@ -12,81 +12,127 @@ interface FloatingNumber {
   value: number;
 }
 
+// ✅ إصلاح: إضافة Debounce للضغط السريع
+const DEBOUNCE_MS = 80; // 80ms بين كل ضغطة
+const MAX_TAPS_PER_SECOND = 12; // حد أقصى 12 ضغطة/ثانية
+
 export function TapScreen() {
   const { coins, energy, maxEnergy, tap, tapMultiplier, tapMultiplierEndTime, autoBotActiveUntil } = useGame();
   const [floatingNumbers, setFloatingNumbers] = useState<FloatingNumber[]>([]);
   const [now, setNow] = useState(() => Date.now());
   const numberIdRef = useRef(0);
   const containerRef = useRef<HTMLDivElement>(null);
-  const adContainerRef = useRef<HTMLDivElement>(null);
+  
+  // ✅ إصلاح: Refs للتحكم في الضغط
+  const lastTapTimeRef = useRef(0);
+  const tapCountRef = useRef(0);
+  const lastSecondRef = useRef(Date.now());
+  const isProcessingRef = useRef(false);
 
   useEffect(() => {
     const interval = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(interval);
   }, []);
 
-  // Load ad script
-  useEffect(() => {
-    if (adContainerRef.current && typeof window !== 'undefined') {
-      const script = document.createElement('script');
-      script.src = 'https://pl28947087.profitablecpmratenetwork.com/80/32/93/803293a4f2eb1a356e9e440cc5c167bd.js';
-      script.async = true;
-      adContainerRef.current.appendChild(script);
-
-      return () => {
-        if (adContainerRef.current && script.parentNode) {
-          adContainerRef.current.removeChild(script);
-        }
-      };
-    }
-  }, []);
-
+  // ✅ إصلاح: دالة معالجة الضغط مع Debounce و Rate Limiting
   const processTap = useCallback((clientX: number, clientY: number) => {
+    const now = Date.now();
+    
+    // Rate limiting: التحقق من عدد الضغطات في الثانية
+    if (now - lastSecondRef.current >= 1000) {
+      tapCountRef.current = 0;
+      lastSecondRef.current = now;
+    }
+    
+    if (tapCountRef.current >= MAX_TAPS_PER_SECOND) {
+      return; // تجاوز الحد المسموح
+    }
+
+    // Debounce: التحقق من الوقت بين الضغطات
+    if (now - lastTapTimeRef.current < DEBOUNCE_MS) {
+      return;
+    }
+
     if (energy < 1) return;
     
+    // ✅ إصلاح: منع المعالجة المتزامنة
+    if (isProcessingRef.current) return;
+    isProcessingRef.current = true;
+
     const success = tap(1);
-    if (!success) return; 
+    
+    if (success) {
+      lastTapTimeRef.current = now;
+      tapCountRef.current++;
+      
+      const rect = containerRef.current?.getBoundingClientRect();
+      const x = rect ? clientX - rect.left : clientX;
+      const y = rect ? clientY - rect.top : clientY;
 
-    const rect = containerRef.current?.getBoundingClientRect();
-    const x = rect ? clientX - rect.left : clientX;
-    const y = rect ? clientY - rect.top : clientY;
+      const isMultiplierActive = tapMultiplierEndTime > Date.now();
+      const value = 1 * (isMultiplierActive ? tapMultiplier : 1);
 
-    const isMultiplierActive = tapMultiplierEndTime > Date.now();
-    const value = 1 * (isMultiplierActive ? tapMultiplier : 1);
+      const newNumber = {
+        id: numberIdRef.current++,
+        x,
+        y,
+        value,
+      };
 
-    const newNumber = {
-      id: numberIdRef.current++,
-      x,
-      y,
-      value,
-    };
+      setFloatingNumbers(prev => {
+        const updated = [...prev, newNumber];
+        if (updated.length > 6) { // ✅ تقليل العدد لتحسين الأداء
+          return updated.slice(updated.length - 6);
+        }
+        return updated;
+      });
 
-    setFloatingNumbers(prev => {
-      const updated = [...prev, newNumber];
-      if (updated.length > 8) {
-        return updated.slice(updated.length - 8);
-      }
-      return updated;
-    });
-
-    setTimeout(() => {
-      setFloatingNumbers(prev => prev.filter(n => n.id !== newNumber.id));
-    }, 600);
-  }, [tap, tapMultiplier, tapMultiplierEndTime, energy]);
-
-  const handleTap = useCallback((e: React.TouchEvent<HTMLDivElement> | React.MouseEvent<HTMLDivElement>) => {
-    if (e.type === 'touchstart') {
-      e.preventDefault();
+      setTimeout(() => {
+        setFloatingNumbers(prev => prev.filter(n => n.id !== newNumber.id));
+      }, 500); // ✅ تقليل وقت العرض
     }
 
-    if ('touches' in e) {
-      Array.from(e.changedTouches).forEach(touch => {
-        processTap(touch.clientX, touch.clientY);
+    // ✅ إصلاح: إطلاق القفل بعد فترة قصيرة
+    setTimeout(() => {
+      isProcessingRef.current = false;
+    }, 50);
+  }, [tap, tapMultiplier, tapMultiplierEndTime, energy]);
+
+  // ✅ إصلاح: معالجة أفضل للـ Touch Events
+  const handleTap = useCallback((e: React.TouchEvent<HTMLDivElement> | React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault(); // ✅ منع السلوك الافتراضي دائماً
+    
+    if ('touches' in e && e.touches.length > 0) {
+      // ✅ معالجة Multi-touch بشكل أفضل
+      const touches = Array.from(e.changedTouches);
+      touches.forEach((touch, index) => {
+        // تأخير بسيط بين كل touch لتجنب الضغط المزدوج
+        setTimeout(() => {
+          processTap(touch.clientX, touch.clientY);
+        }, index * 30);
       });
-    } else {
+    } else if ('clientX' in e) {
       processTap(e.clientX, e.clientY);
     }
   }, [processTap]);
+
+  // ✅ إصلاح: منع الضغط المزدوج على الأجهزة المحمولة
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const preventDoubleTap = (e: TouchEvent) => {
+      if (e.touches.length > 1) {
+        e.preventDefault();
+      }
+    };
+
+    container.addEventListener('touchstart', preventDoubleTap, { passive: false });
+    
+    return () => {
+      container.removeEventListener('touchstart', preventDoubleTap);
+    };
+  }, []);
 
   const formatCoins = (num: number) => {
     return Math.floor(num).toLocaleString('en-US');
@@ -97,17 +143,10 @@ export function TapScreen() {
   const currentMultiplierDisplay = isMultiplierActive ? `x${tapMultiplier}` : '';
 
   return (
-    <div className="flex flex-col items-center justify-between h-full w-full pt-2 pb-28 px-4 relative overflow-hidden">
+    <div className="flex flex-col items-center justify-between h-full w-full pt-2 pb-28 px-4 relative overflow-hidden select-none">
       
       {/* Background Effects */}
       <div className="absolute top-[-10%] left-[-10%] w-[120%] h-[120%] bg-[radial-gradient(circle_at_50%_40%,_rgba(250,204,21,0.08)_0%,_transparent_60%)] pointer-events-none" />
-      
-      {/* Ad Container - Social Bar at Top */}
-      <div 
-        ref={adContainerRef}
-        className="w-full max-w-sm z-30 mb-2"
-        style={{ minHeight: '50px' }}
-      />
 
       {/* Stats Area */}
       <div className="w-full flex flex-col items-center space-y-4 z-10 mt-2">
@@ -157,6 +196,7 @@ export function TapScreen() {
         className="relative flex-1 w-full flex items-center justify-center touch-none my-4"
         onTouchStart={handleTap}
         onMouseDown={handleTap}
+        style={{ touchAction: 'manipulation' }} // ✅ تحسين الأداء على الموبايل
       >
         {/* Main Coin */}
         <motion.div
@@ -214,9 +254,9 @@ export function TapScreen() {
         <div className="h-6 w-full bg-[#111] rounded-full overflow-hidden border border-white/10 p-1 shadow-inner relative">
           <motion.div 
             className="h-full bg-gradient-to-r from-yellow-600 via-yellow-400 to-yellow-300 rounded-full relative overflow-hidden"
-            initial={{ width: `${(energy / maxEnergy) * 100}%` }}
+            initial={false}
             animate={{ width: `${(energy / maxEnergy) * 100}%` }}
-            transition={{ type: 'tween', ease: 'linear', duration: 0.2 }}
+            transition={{ type: 'tween', ease: 'linear', duration: 0.1 }}
           />
         </div>
       </div>
