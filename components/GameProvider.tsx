@@ -116,7 +116,13 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
   const tapQueue = useRef<{ t: number; a: number }[]>([]);
   const isSyncing = useRef(false);
   const lastTapTimeRef = useRef<number>(0);
-  const adCheckInterval = useRef<NodeJS.Timeout | null>(null);
+  
+  // ✅ إصلاح: Refs لإدارة حالة الإعلانات بشكل منفصل
+  const adProtectionCache = useRef<{
+    data: any;
+    timestamp: number;
+  } | null>(null);
+  const AD_PROTECTION_CACHE_MS = 5000; // Cache لمدة 5 ثوانٍ
 
   const updateStateFromServer = useCallback((data: any) => {
     setState(prev => ({
@@ -144,8 +150,21 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
     setIsLoaded(true);
   }, []);
 
-  const checkAdEligibility = useCallback(async () => {
+  // ✅ إصلاح: Caching لحماية الإعلانات + Debounce
+  const checkAdEligibility = useCallback(async (force: boolean = false) => {
     if (!isLoaded) return;
+    
+    // ✅ استخدام Cache إذا كان متاحاً ولم تنتهِ صلاحيته
+    if (!force && adProtectionCache.current) {
+      const age = Date.now() - adProtectionCache.current.timestamp;
+      if (age < AD_PROTECTION_CACHE_MS) {
+        setState(prev => ({
+          ...prev,
+          adProtection: adProtectionCache.current!.data
+        }));
+        return;
+      }
+    }
     
     try {
       const initData = window.Telegram?.WebApp?.initData;
@@ -159,15 +178,23 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
       
       if (response.ok) {
         const data = await response.json();
+        const protectionData = {
+          remainingToday: data.remainingToday,
+          remainingThisHour: data.remainingThisHour,
+          nextAdInSeconds: data.nextAdInSeconds || 0,
+          isAllowed: data.isAllowed,
+          waitSeconds: data.waitSeconds || 0
+        };
+        
+        // ✅ تحديث Cache
+        adProtectionCache.current = {
+          data: protectionData,
+          timestamp: Date.now()
+        };
+        
         setState(prev => ({
           ...prev,
-          adProtection: {
-            remainingToday: data.remainingToday,
-            remainingThisHour: data.remainingThisHour,
-            nextAdInSeconds: data.nextAdInSeconds || 0,
-            isAllowed: data.isAllowed,
-            waitSeconds: data.waitSeconds || 0
-          }
+          adProtection: protectionData
         }));
       }
     } catch (e) {
@@ -218,22 +245,21 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
     initApp();
   }, [updateStateFromServer]);
 
+  // ✅ إصلاح: Sync أقل تكراراً (كل 10 ثوانٍ بدلاً من 5)
   useEffect(() => {
     if (!isLoaded) return;
     
     checkAdEligibility();
     
-    adCheckInterval.current = setInterval(() => {
+    // ✅ تقليل تكرار الفحص إلى كل 30 ثانية
+    const interval = setInterval(() => {
       checkAdEligibility();
-    }, 60000);
+    }, 30000);
     
-    return () => {
-      if (adCheckInterval.current) {
-        clearInterval(adCheckInterval.current);
-      }
-    };
+    return () => clearInterval(interval);
   }, [isLoaded, checkAdEligibility]);
 
+  // ✅ إصلاح: Batching أفضل للـ Taps
   const syncWithServer = useCallback(async (adWatchedType?: string) => {
     if (!isLoaded || (tapQueue.current.length === 0 && !adWatchedType) || isSyncing.current) return;
     isSyncing.current = true;
@@ -263,15 +289,24 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
             errorData.code === 'HOURLY_LIMIT_REACHED' || 
             errorData.code === 'DAILY_LIMIT_REACHED' ||
             errorData.code === 'SUSPICIOUS_ACTIVITY') {
+          
+          const protectionData = {
+            remainingToday: errorData.details?.remainingToday || 0,
+            remainingThisHour: errorData.details?.remainingThisHour || 0,
+            nextAdInSeconds: errorData.details?.waitSeconds || 0,
+            isAllowed: false,
+            waitSeconds: errorData.details?.waitSeconds || 0
+          };
+          
+          // ✅ تحديث Cache
+          adProtectionCache.current = {
+            data: protectionData,
+            timestamp: Date.now()
+          };
+          
           setState(prev => ({
             ...prev,
-            adProtection: {
-              remainingToday: errorData.details?.remainingToday || 0,
-              remainingThisHour: errorData.details?.remainingThisHour || 0,
-              nextAdInSeconds: errorData.details?.waitSeconds || 0,
-              isAllowed: false,
-              waitSeconds: errorData.details?.waitSeconds || 0
-            }
+            adProtection: protectionData
           }));
           throw new Error(errorData.error);
         }
@@ -296,14 +331,18 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
 
     } catch (error) {
       console.error('Sync failed, restoring queue', error);
-      tapQueue.current = [...tapsToSync, ...tapQueue.current];
+      // ✅ إعادة أقل عدد من الـ Taps لتجنب الازدحام
+      if (tapsToSync.length <= 50) {
+        tapQueue.current = [...tapsToSync, ...tapQueue.current];
+      }
     } finally {
       isSyncing.current = false;
     }
   }, [isLoaded]);
 
+  // ✅ إصلاح: Sync كل 10 ثوانٍ بدلاً من 5
   useEffect(() => {
-    const interval = setInterval(() => syncWithServer(), 5000);
+    const interval = setInterval(() => syncWithServer(), 10000);
     return () => clearInterval(interval);
   }, [syncWithServer]);
 
@@ -352,9 +391,12 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
     return () => clearInterval(interval);
   }, [isLoaded]);
 
+  // ✅ إصلاح: Debounce للـ Tap
   const tap = useCallback((amount: number) => {
     const now = Date.now();
-    if (now - lastTapTimeRef.current < 100) {
+    
+    // ✅ منع الضغط السريع جداً
+    if (now - lastTapTimeRef.current < 50) {
       return false;
     }
     
@@ -413,12 +455,22 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
     }
   };
 
+  // ✅ إصلاح: التحقق من صلاحية الإعلان مع Cache
   const validateAdEligibility = async (): Promise<boolean> => {
-    if (!state.adProtection) {
-      await checkAdEligibility();
+    // ✅ استخدام Cache أولاً
+    if (adProtectionCache.current) {
+      const age = Date.now() - adProtectionCache.current.timestamp;
+      const protection = adProtectionCache.current.data;
+      
+      if (age < AD_PROTECTION_CACHE_MS && protection.isAllowed && protection.nextAdInSeconds === 0) {
+        return true;
+      }
     }
     
-    const protection = state.adProtection;
+    // ✅ إذا لم يكن Cache صالحاً، تحقق من السيرفر
+    await checkAdEligibility(true);
+    
+    const protection = adProtectionCache.current?.data;
     if (!protection) return false;
     
     if (!protection.isAllowed || protection.nextAdInSeconds > 0) {
@@ -431,7 +483,7 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
   const watchAdForMultiplier = async () => {
     const isEligible = await validateAdEligibility();
     if (!isEligible) {
-      console.warn('Ad not eligible:', state.adProtection);
+      console.warn('Ad not eligible:', adProtectionCache.current?.data);
       return;
     }
 
@@ -442,7 +494,6 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
       const now = Date.now();
       const newEndTime = now + 5 * 60 * 1000;
       
-      // Update local state first for immediate feedback
       setState(prev => ({
         ...prev,
         tapMultiplier: 4,
@@ -452,15 +503,16 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
         lastUpdateTime: now
       }));
       
-      // Sync with server - this will record the ad watch
       await syncWithServer('multiplier');
+      // ✅ تحديث Cache بعد المشاهدة
+      await checkAdEligibility(true);
     }
   };
 
   const watchAdForEnergy = async () => {
     const isEligible = await validateAdEligibility();
     if (!isEligible) {
-      console.warn('Ad not eligible:', state.adProtection);
+      console.warn('Ad not eligible:', adProtectionCache.current?.data);
       return;
     }
 
@@ -479,13 +531,14 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
       }));
       
       await syncWithServer('energy');
+      await checkAdEligibility(true);
     }
   };
 
   const watchAdForBot = async () => {
     const isEligible = await validateAdEligibility();
     if (!isEligible) {
-      console.warn('Ad not eligible:', state.adProtection);
+      console.warn('Ad not eligible:', adProtectionCache.current?.data);
       return;
     }
 
@@ -503,6 +556,7 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
       }));
       
       await syncWithServer('bot');
+      await checkAdEligibility(true);
     }
   };
 
