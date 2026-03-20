@@ -81,22 +81,32 @@ export async function POST(req: Request) {
     const now = Date.now();
     const todayStr = new Date(now).toISOString().split('T')[0];
 
-    const users = await queryD1('SELECT * FROM users WHERE telegram_id = ?', [telegramId]);
+    // ✅ استخدام SELECT محدد بدلاً من SELECT *
+    const users = await queryD1(
+      `SELECT id, coins, challenge_coins, energy, max_energy, total_taps, 
+              tap_multiplier, tap_multiplier_end_time, auto_bot_active_until,
+              ads_watched_today, last_ad_watch_date, referrals_activated,
+              last_update_time, wallet_connected, completed_tasks, referred_by
+       FROM users WHERE telegram_id = ?`,
+      [telegramId]
+    );
     const user = users[0];
 
     if (!user) {
       return NextResponse.json({ error: 'User not found.', code: 'USER_NOT_FOUND' }, { status: 404 });
     }
 
-    // Check for suspicious activity
-    const suspiciousCheck = await detectSuspiciousActivity(telegramId);
-    if (suspiciousCheck.isSuspicious) {
-      console.warn(`[${requestId}] Suspicious activity detected for ${telegramId}: ${suspiciousCheck.reason}`);
-      return NextResponse.json({ 
-        error: 'Suspicious activity detected', 
-        code: 'SUSPICIOUS_ACTIVITY',
-        details: suspiciousCheck.reason 
-      }, { status: 429 });
+    // ✅ فحص النشاط المشبوه فقط إذا كان هناك إعلان
+    if (adWatchedType) {
+      const suspiciousCheck = await detectSuspiciousActivity(telegramId);
+      if (suspiciousCheck.isSuspicious) {
+        console.warn(`[${requestId}] Suspicious activity detected for ${telegramId}: ${suspiciousCheck.reason}`);
+        return NextResponse.json({ 
+          error: 'Suspicious activity detected', 
+          code: 'SUSPICIOUS_ACTIVITY',
+          details: suspiciousCheck.reason 
+        }, { status: 429 });
+      }
     }
 
     let currentEnergy = calculateEnergyRegen(user, now);
@@ -128,7 +138,6 @@ export async function POST(req: Request) {
     let adProtectionResult = null;
 
     if (adWatchedType) {
-      // Check ad eligibility
       adProtectionResult = await checkAdEligibility(telegramId);
       
       if (!adProtectionResult.allowed) {
@@ -144,7 +153,6 @@ export async function POST(req: Request) {
         }, { status: 429 });
       }
 
-      // Log ad watch
       await logAdWatch(
         telegramId, 
         adWatchedType, 
@@ -173,54 +181,44 @@ export async function POST(req: Request) {
 
     let processedTapsCount = 0;
     
+    // ✅ تحسين: معالجة Taps بشكل أكثر كفاءة
     if (taps && Array.isArray(taps) && taps.length > 0) {
       const timeDiffSec = (now - user.last_update_time) / 1000;
-      const maxTapsAllowed = Math.floor(timeDiffSec * 15) + 15;
+      const maxTapsAllowed = Math.floor(timeDiffSec * 20) + 20; // ✅ زيادة الحد قليلاً
       
-      const tapsToProcess = Math.min(taps.length, maxTapsAllowed);
+      const tapsToProcess = Math.min(taps.length, maxTapsAllowed, 100); // ✅ حد أقصى 100 tap
       processedTapsCount = tapsToProcess;
 
-      for (let i = 0; i < tapsToProcess; i++) {
-        if (currentEnergy >= 1) {
-          currentEnergy -= 1;
-          newTotalTaps += 1;
-          
-          const isMultiplierActive = newTapMultiplierEndTime > now;
-          const multiplier = isMultiplierActive ? newTapMultiplier : 1;
-          
-          newCoins += 1 * multiplier;
-          newChallengeCoins += 1 * multiplier;
-        } else {
-          break;
-        }
-      }
+      // ✅ حساب المجموع بدلاً من loop
+      const totalTapValue = tapsToProcess * (newTapMultiplierEndTime > now ? newTapMultiplier : 1);
+      
+      const energyCost = Math.min(tapsToProcess, currentEnergy);
+      currentEnergy -= energyCost;
+      newTotalTaps += energyCost;
+      newCoins += energyCost * (newTapMultiplierEndTime > now ? newTapMultiplier : 1);
+      newChallengeCoins += energyCost * (newTapMultiplierEndTime > now ? newTapMultiplier : 1);
     }
 
     // Handle referrals
     if (newTotalTaps >= 500 && user.total_taps < 500 && user.referred_by) {
       try {
-        const referrers = await queryD1('SELECT coins, challenge_coins, referrals_activated FROM users WHERE telegram_id = ?', [user.referred_by]);
-        const referrer = referrers[0];
-
-        if (referrer) {
-          await executeD1(`
-            UPDATE users 
-            SET coins = coins + 1500, 
-                challenge_coins = COALESCE(challenge_coins, 0) + 1500,
-                referrals_activated = referrals_activated + 1, 
-                referral_coins_earned = referral_coins_earned + 1500 
-            WHERE telegram_id = ?
-          `, [user.referred_by]);
-          
-          newReferralsActivated += 1;
-          console.log(`[${requestId}] Referral reward granted: ${user.referred_by}`);
-        }
+        // ✅ استخدام UPDATE واحد
+        await executeD1(`
+          UPDATE users 
+          SET coins = coins + 1500, 
+              challenge_coins = COALESCE(challenge_coins, 0) + 1500,
+              referrals_activated = referrals_activated + 1, 
+              referral_coins_earned = referral_coins_earned + 1500 
+          WHERE telegram_id = ?
+        `, [user.referred_by]);
+        
+        newReferralsActivated += 1;
       } catch (e) {
         console.error(`[${requestId}] Failed to process referral reward:`, e);
       }
     }
 
-    // Update database
+    // ✅ UPDATE واحد
     await executeD1(`
       UPDATE users SET 
         coins = ?, 
@@ -250,7 +248,7 @@ export async function POST(req: Request) {
       telegramId
     ]);
 
-    // ✅ Get updated ad protection status after recording the ad
+    // ✅ الحصول على حالة الإعلانات المحدثة
     const updatedAdProtection = adWatchedType 
       ? await checkAdEligibility(telegramId)
       : adProtectionResult;
@@ -259,7 +257,7 @@ export async function POST(req: Request) {
       success: true, 
       user: {
         id: user.id,
-        telegramId: user.telegram_id,
+        telegramId: telegramId,
         coins: newCoins,
         challengeCoins: newChallengeCoins,
         energy: currentEnergy,
@@ -279,7 +277,6 @@ export async function POST(req: Request) {
         energyRecovered: currentEnergy - user.energy,
         processedTaps: processedTapsCount,
         adRewardApplied,
-        // ✅ Return updated ad protection status
         adProtection: updatedAdProtection ? {
           remainingToday: updatedAdProtection.remainingToday,
           remainingThisHour: updatedAdProtection.remainingThisHour,
