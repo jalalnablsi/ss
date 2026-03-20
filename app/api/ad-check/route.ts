@@ -10,7 +10,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Missing initData' }, { status: 400 });
     }
 
-    // استخراج معرف المستخدم
+    // Extract user ID
     const urlParams = new URLSearchParams(initData);
     const userStr = urlParams.get('user');
     if (!userStr) {
@@ -20,21 +20,23 @@ export async function POST(req: Request) {
     const tgUser = JSON.parse(decodeURIComponent(userStr));
     const telegramId = tgUser.id.toString();
 
-    // التحقق من وجود المستخدم
+    // Verify user exists
     const users = await queryD1('SELECT id FROM users WHERE telegram_id = ?', [telegramId]);
     if (users.length === 0) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 });
     }
 
-    // ✅ التحقق من الصلاحية
+    // Check eligibility
     const eligibility = await checkAdEligibility(telegramId);
     const stats = await getUserAdStats(telegramId);
 
+    // ✅ Return consistent data structure with sync API
     return NextResponse.json({
       isAllowed: eligibility.allowed,
       remainingToday: eligibility.remainingToday,
       remainingThisHour: eligibility.remainingThisHour,
       waitSeconds: eligibility.waitSeconds,
+      nextAdInSeconds: eligibility.waitSeconds, // Alias for frontend compatibility
       nextAllowedAt: eligibility.nextAllowedAt,
       currentTier: eligibility.currentTier,
       reason: eligibility.reason,
