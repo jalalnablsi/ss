@@ -65,7 +65,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Missing initData', code: 'MISSING_INIT_DATA' }, { status: 400 });
     }
 
-    // ✅ quickSync للـ sendBeacon (لا تحتاج استجابة)
     const isQuickSync = quickSync === true;
 
     const isValid = validateTelegramWebAppData(initData);
@@ -102,6 +101,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'User not found.', code: 'USER_NOT_FOUND' }, { status: 404 });
     }
 
+    // ✅ فحص النشاط المشبوه فقط عند مشاهدة إعلان
     if (adWatchedType) {
       const suspiciousCheck = await detectSuspiciousActivity(telegramId);
       if (suspiciousCheck.isSuspicious) {
@@ -129,6 +129,7 @@ export async function POST(req: Request) {
     let newLastAdWatchDate = user.last_ad_watch_date;
     let newReferralsActivated = user.referrals_activated;
 
+    // ✅ التحقق من تاريخ آخر إعلان وتصفير العداد إذا لزم الأمر
     let lastAdDateStr = '';
     if (newLastAdWatchDate) {
       lastAdDateStr = newLastAdWatchDate.includes('T') 
@@ -144,6 +145,7 @@ export async function POST(req: Request) {
     let adProtectionResult = null;
 
     if (adWatchedType) {
+      // ✅ التحقق من الصلاحية أولاً
       adProtectionResult = await checkAdEligibility(telegramId);
       
       if (!adProtectionResult.allowed) {
@@ -160,7 +162,8 @@ export async function POST(req: Request) {
         }, { status: 429 });
       }
 
-      await logAdWatch(
+      // ✅ تسجيل الإعلان مرة واحدة فقط (داخل logAdWatch)
+      const logResult = await logAdWatch(
         telegramId, 
         adWatchedType, 
         1000,
@@ -168,8 +171,9 @@ export async function POST(req: Request) {
         req.headers.get('user-agent') || undefined
       );
 
-      newAdsWatchedToday += 1;
-      newLastAdWatchDate = new Date(now).toISOString();
+      // ✅ استخدام العداد من نتيجة التسجيل (مصدر الحقيقة)
+      newAdsWatchedToday = logResult.newCount;
+      newLastAdWatchDate = todayStr;
       adRewardApplied = true;
 
       newCoins += 1000;
@@ -195,7 +199,6 @@ export async function POST(req: Request) {
       const tapsToProcess = Math.min(taps.length, maxTapsAllowed, 100);
       processedTapsCount = tapsToProcess;
 
-      // ✅ حساب المجموع بدلاً من loop
       const totalTapValue = tapsToProcess * (newTapMultiplierEndTime > now ? newTapMultiplier : 1);
       const energyCost = Math.min(tapsToProcess, currentEnergy);
       
@@ -222,6 +225,7 @@ export async function POST(req: Request) {
       }
     }
 
+    // ✅ تحديث المستخدم (بدون تعديل ads_watched_today هنا - تم تعديله في logAdWatch)
     await executeD1(`
       UPDATE users SET 
         coins = ?, 
@@ -231,7 +235,6 @@ export async function POST(req: Request) {
         tap_multiplier = ?, 
         tap_multiplier_end_time = ?, 
         auto_bot_active_until = ?, 
-        ads_watched_today = ?, 
         last_ad_watch_date = ?, 
         referrals_activated = ?,
         last_update_time = ?
@@ -244,18 +247,17 @@ export async function POST(req: Request) {
       newTapMultiplier, 
       newTapMultiplierEndTime, 
       newAutoBotActiveUntil, 
-      newAdsWatchedToday, 
       newLastAdWatchDate, 
       newReferralsActivated,
       now, 
       telegramId
     ]);
 
+    // ✅ الحصول على حالة الإعلانات المحدثة
     const updatedAdProtection = adWatchedType 
       ? await checkAdEligibility(telegramId)
       : adProtectionResult;
 
-    // ✅ للـ quickSync (sendBeacon)، نرجع 200 فقط
     if (isQuickSync) {
       return new Response(null, { status: 200 });
     }
@@ -273,7 +275,7 @@ export async function POST(req: Request) {
         tapMultiplier: newTapMultiplier,
         tapMultiplierEndTime: newTapMultiplierEndTime,
         autoBotActiveUntil: newAutoBotActiveUntil,
-        adsWatchedToday: newAdsWatchedToday,
+        adsWatchedToday: newAdsWatchedToday, // ✅ العدد الدقيق من السيرفر
         referralsActivated: newReferralsActivated,
         walletConnected: Boolean(user.wallet_connected),
         completedTasks: JSON.parse(user.completed_tasks || '[]')
@@ -289,7 +291,8 @@ export async function POST(req: Request) {
           remainingThisHour: updatedAdProtection.remainingThisHour,
           nextAdInSeconds: updatedAdProtection.waitSeconds,
           isAllowed: updatedAdProtection.allowed,
-          waitSeconds: updatedAdProtection.waitSeconds
+          waitSeconds: updatedAdProtection.waitSeconds,
+          adsWatchedToday: updatedAdProtection.adsWatchedToday // ✅ إضافة
         } : null
       }
     });
