@@ -58,21 +58,27 @@ export async function POST(req: Request) {
   const requestId = crypto.randomUUID().slice(0, 8);
 
   try {
-    const { initData, taps, adWatchedType } = await req.json();
+    const body = await req.json();
+    const { initData, taps, adWatchedType, quickSync } = body;
 
     if (!initData) {
       return NextResponse.json({ error: 'Missing initData', code: 'MISSING_INIT_DATA' }, { status: 400 });
     }
 
+    // ✅ quickSync للـ sendBeacon (لا تحتاج استجابة)
+    const isQuickSync = quickSync === true;
+
     const isValid = validateTelegramWebAppData(initData);
     if (!isValid && process.env.TELEGRAM_BOT_TOKEN) {
       console.warn(`[${requestId}] Invalid Telegram signature`);
+      if (isQuickSync) return new Response(null, { status: 200 });
       return NextResponse.json({ error: 'Invalid Telegram data', code: 'INVALID_SIGNATURE' }, { status: 403 });
     }
 
     const urlParams = new URLSearchParams(initData);
     const userStr = urlParams.get('user');
     if (!userStr) {
+      if (isQuickSync) return new Response(null, { status: 200 });
       return NextResponse.json({ error: 'No user data found', code: 'NO_USER_DATA' }, { status: 400 });
     }
     
@@ -81,7 +87,6 @@ export async function POST(req: Request) {
     const now = Date.now();
     const todayStr = new Date(now).toISOString().split('T')[0];
 
-    // ✅ استخدام SELECT محدد بدلاً من SELECT *
     const users = await queryD1(
       `SELECT id, coins, challenge_coins, energy, max_energy, total_taps, 
               tap_multiplier, tap_multiplier_end_time, auto_bot_active_until,
@@ -93,14 +98,15 @@ export async function POST(req: Request) {
     const user = users[0];
 
     if (!user) {
+      if (isQuickSync) return new Response(null, { status: 200 });
       return NextResponse.json({ error: 'User not found.', code: 'USER_NOT_FOUND' }, { status: 404 });
     }
 
-    // ✅ فحص النشاط المشبوه فقط إذا كان هناك إعلان
     if (adWatchedType) {
       const suspiciousCheck = await detectSuspiciousActivity(telegramId);
       if (suspiciousCheck.isSuspicious) {
         console.warn(`[${requestId}] Suspicious activity detected for ${telegramId}: ${suspiciousCheck.reason}`);
+        if (isQuickSync) return new Response(null, { status: 200 });
         return NextResponse.json({ 
           error: 'Suspicious activity detected', 
           code: 'SUSPICIOUS_ACTIVITY',
@@ -141,6 +147,7 @@ export async function POST(req: Request) {
       adProtectionResult = await checkAdEligibility(telegramId);
       
       if (!adProtectionResult.allowed) {
+        if (isQuickSync) return new Response(null, { status: 200 });
         return NextResponse.json({ 
           error: 'Ad not allowed', 
           code: adProtectionResult.reason,
@@ -181,28 +188,25 @@ export async function POST(req: Request) {
 
     let processedTapsCount = 0;
     
-    // ✅ تحسين: معالجة Taps بشكل أكثر كفاءة
     if (taps && Array.isArray(taps) && taps.length > 0) {
       const timeDiffSec = (now - user.last_update_time) / 1000;
-      const maxTapsAllowed = Math.floor(timeDiffSec * 20) + 20; // ✅ زيادة الحد قليلاً
+      const maxTapsAllowed = Math.floor(timeDiffSec * 20) + 20;
       
-      const tapsToProcess = Math.min(taps.length, maxTapsAllowed, 100); // ✅ حد أقصى 100 tap
+      const tapsToProcess = Math.min(taps.length, maxTapsAllowed, 100);
       processedTapsCount = tapsToProcess;
 
       // ✅ حساب المجموع بدلاً من loop
       const totalTapValue = tapsToProcess * (newTapMultiplierEndTime > now ? newTapMultiplier : 1);
-      
       const energyCost = Math.min(tapsToProcess, currentEnergy);
+      
       currentEnergy -= energyCost;
       newTotalTaps += energyCost;
       newCoins += energyCost * (newTapMultiplierEndTime > now ? newTapMultiplier : 1);
       newChallengeCoins += energyCost * (newTapMultiplierEndTime > now ? newTapMultiplier : 1);
     }
 
-    // Handle referrals
     if (newTotalTaps >= 500 && user.total_taps < 500 && user.referred_by) {
       try {
-        // ✅ استخدام UPDATE واحد
         await executeD1(`
           UPDATE users 
           SET coins = coins + 1500, 
@@ -218,7 +222,6 @@ export async function POST(req: Request) {
       }
     }
 
-    // ✅ UPDATE واحد
     await executeD1(`
       UPDATE users SET 
         coins = ?, 
@@ -248,10 +251,14 @@ export async function POST(req: Request) {
       telegramId
     ]);
 
-    // ✅ الحصول على حالة الإعلانات المحدثة
     const updatedAdProtection = adWatchedType 
       ? await checkAdEligibility(telegramId)
       : adProtectionResult;
+
+    // ✅ للـ quickSync (sendBeacon)، نرجع 200 فقط
+    if (isQuickSync) {
+      return new Response(null, { status: 200 });
+    }
 
     return NextResponse.json({ 
       success: true, 
