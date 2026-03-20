@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useGame } from './GameProvider';
 import { Zap, BatteryCharging, Bot, PlaySquare, Loader2, Coins, Clock, AlertTriangle } from 'lucide-react';
 
@@ -23,29 +23,84 @@ export function BoostsScreen() {
   const [loadingBoostId, setLoadingBoostId] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [localCooldown, setLocalCooldown] = useState(0);
+  const [isVisible, setIsVisible] = useState(true);
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const visibilityCheckRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Handle visibility change
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      const visible = document.visibilityState === 'visible';
+      setIsVisible(visible);
+      
+      if (visible) {
+        // Refresh data when becoming visible
+        checkAdEligibility();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
+    // Initial check
+    checkAdEligibility();
+    
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [checkAdEligibility]);
 
   // Update timer every second
   useEffect(() => {
-    const interval = setInterval(() => {
+    intervalRef.current = setInterval(() => {
       setNow(Date.now());
-      setLocalCooldown(prev => Math.max(0, prev - 1));
+      setLocalCooldown(prev => {
+        if (prev > 0) {
+          return prev - 1;
+        }
+        return 0;
+      });
     }, 1000);
-    return () => clearInterval(interval);
+    
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+      }
+    };
   }, []);
 
   // Sync local cooldown with server data
   useEffect(() => {
     if (adProtection?.waitSeconds && adProtection.waitSeconds > 0) {
       setLocalCooldown(adProtection.waitSeconds);
+    } else if (adProtection?.nextAdInSeconds && adProtection.nextAdInSeconds > 0) {
+      setLocalCooldown(adProtection.nextAdInSeconds);
     }
-  }, [adProtection?.waitSeconds]);
+  }, [adProtection?.waitSeconds, adProtection?.nextAdInSeconds]);
+
+  // Periodic refresh when visible
+  useEffect(() => {
+    if (isVisible) {
+      visibilityCheckRef.current = setInterval(() => {
+        checkAdEligibility();
+      }, 10000); // Refresh every 10 seconds when visible
+    }
+    
+    return () => {
+      if (visibilityCheckRef.current) {
+        clearInterval(visibilityCheckRef.current);
+      }
+    };
+  }, [isVisible, checkAdEligibility]);
 
   const isMultiplierActive = tapMultiplierEndTime > now;
   const isBotActive = autoBotActiveUntil > now;
   const isEnergyFull = energy >= maxEnergy;
 
   // Use local cooldown or server value
-  const effectiveWaitSeconds = localCooldown > 0 ? localCooldown : (adProtection?.nextAdInSeconds || 0);
+  const effectiveWaitSeconds = localCooldown > 0 
+    ? localCooldown 
+    : (adProtection?.nextAdInSeconds || adProtection?.waitSeconds || 0);
+  
   const canWatchAd = adProtection?.isAllowed && effectiveWaitSeconds === 0;
 
   // Calculate ads watched (not remaining)
@@ -82,7 +137,7 @@ export function BoostsScreen() {
     
     setLoadingBoostId(id);
     await action();
-    // Refresh ad eligibility immediately after watching
+    // Refresh immediately after watching
     await checkAdEligibility();
     setLoadingBoostId(null);
   }, [canWatchAd, effectiveWaitSeconds, checkAdEligibility]);
@@ -144,6 +199,15 @@ export function BoostsScreen() {
   // Calculate progress percentage correctly
   const progressPercentage = Math.min(100, Math.max(0, (adsWatchedCount / 30) * 100));
 
+  // Show loading state if no adProtection data yet
+  if (!adProtection) {
+    return (
+      <div className="w-full h-full flex items-center justify-center pb-28">
+        <Loader2 className="animate-spin text-yellow-500" size={48} />
+      </div>
+    );
+  }
+
   return (
     <div className="w-full h-full pb-28 pt-8 px-5 overflow-y-auto">
       <div className="text-center mb-10">
@@ -152,52 +216,50 @@ export function BoostsScreen() {
       </div>
 
       {/* Ad Status Card */}
-      {adProtection && (
-        <div className="mb-6 bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-4">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-sm text-zinc-400">Daily Ads Watched</span>
-            <span className="text-sm font-bold text-white">{adsWatchedCount} / 30</span>
-          </div>
-          
-          {/* Progress Bar */}
-          <div className="w-full bg-white/10 rounded-full h-2 mb-3 overflow-hidden">
-            <div 
-              className={`h-2 rounded-full transition-all duration-500 ${
-                adsWatchedCount >= 30 
-                  ? 'bg-red-500' 
-                  : adsWatchedCount >= 25 
-                    ? 'bg-orange-500' 
-                    : 'bg-gradient-to-r from-blue-500 to-cyan-500'
-              }`}
-              style={{ width: `${progressPercentage}%` }}
-            />
-          </div>
-          
-          <div className="flex items-center justify-between text-xs mb-2">
-            <span className="text-zinc-500">
-              This Hour: {Math.max(0, 5 - adsRemainingThisHour)} / 5 watched
-            </span>
-            <span className={`font-medium ${
-              adsRemainingToday <= 5 ? 'text-red-400' : 'text-zinc-400'
-            }`}>
-              {adsRemainingToday} remaining today
-            </span>
-          </div>
-
-          {/* Countdown Timer */}
-          {effectiveWaitSeconds > 0 && (
-            <div className="mt-3 pt-3 border-t border-white/10 flex items-center justify-between">
-              <span className="text-xs text-orange-400 flex items-center gap-1">
-                <Clock size={12} />
-                Next ad available in:
-              </span>
-              <span className="text-sm font-bold text-orange-300 font-mono">
-                {formatWaitTime(effectiveWaitSeconds)}
-              </span>
-            </div>
-          )}
+      <div className="mb-6 bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-4">
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-sm text-zinc-400">Daily Ads Watched</span>
+          <span className="text-sm font-bold text-white">{adsWatchedCount} / 30</span>
         </div>
-      )}
+        
+        {/* Progress Bar */}
+        <div className="w-full bg-white/10 rounded-full h-2 mb-3 overflow-hidden">
+          <div 
+            className={`h-2 rounded-full transition-all duration-500 ${
+              adsWatchedCount >= 30 
+                ? 'bg-red-500' 
+                : adsWatchedCount >= 25 
+                  ? 'bg-orange-500' 
+                  : 'bg-gradient-to-r from-blue-500 to-cyan-500'
+            }`}
+            style={{ width: `${progressPercentage}%` }}
+          />
+        </div>
+        
+        <div className="flex items-center justify-between text-xs mb-2">
+          <span className="text-zinc-500">
+            This Hour: {Math.max(0, 5 - adsRemainingThisHour)} / 5 watched
+          </span>
+          <span className={`font-medium ${
+            adsRemainingToday <= 5 ? 'text-red-400' : 'text-zinc-400'
+          }`}>
+            {adsRemainingToday} remaining today
+          </span>
+        </div>
+
+        {/* Countdown Timer */}
+        {effectiveWaitSeconds > 0 && (
+          <div className="mt-3 pt-3 border-t border-white/10 flex items-center justify-between">
+            <span className="text-xs text-orange-400 flex items-center gap-1">
+              <Clock size={12} />
+              Next ad available in:
+            </span>
+            <span className="text-sm font-bold text-orange-300 font-mono">
+              {formatWaitTime(effectiveWaitSeconds)}
+            </span>
+          </div>
+        )}
+      </div>
 
       {/* Cooldown Warning */}
       {effectiveWaitSeconds > 0 && (
