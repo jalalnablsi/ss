@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useGame } from './GameProvider';
-import { Zap, BatteryCharging, Bot, PlaySquare, Loader2, Coins, Clock } from 'lucide-react';
+import { Zap, BatteryCharging, Bot, PlaySquare, Loader2, Coins, Clock, AlertTriangle } from 'lucide-react';
 
 export function BoostsScreen() {
   const { 
@@ -15,7 +15,8 @@ export function BoostsScreen() {
     isWatchingAd,
     tapMultiplier,
     energy,
-    maxEnergy
+    maxEnergy,
+    adProtection
   } = useGame();
 
   const [loadingBoostId, setLoadingBoostId] = useState<string | null>(null);
@@ -29,6 +30,9 @@ export function BoostsScreen() {
   const isMultiplierActive = tapMultiplierEndTime > now;
   const isBotActive = autoBotActiveUntil > now;
   const isEnergyFull = energy >= maxEnergy;
+
+  const nextAdWaitSeconds = adProtection?.nextAdInSeconds || 0;
+  const canWatchAd = adProtection?.isAllowed && nextAdWaitSeconds === 0;
 
   const formatTimeLeft = (endTime: number) => {
     const diff = Math.max(0, endTime - now);
@@ -44,7 +48,18 @@ export function BoostsScreen() {
     return `${hours}h ${minutes}m`;
   };
 
+  const formatWaitTime = (seconds: number) => {
+    if (seconds < 60) return `${seconds}s`;
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}m ${secs}s`;
+  };
+
   const handleWatchAd = async (id: string, action: () => Promise<void>) => {
+    if (!canWatchAd && nextAdWaitSeconds > 0) {
+      return;
+    }
+    
     setLoadingBoostId(id);
     await action();
     setLoadingBoostId(null);
@@ -63,7 +78,7 @@ export function BoostsScreen() {
       isActive: isMultiplierActive,
       statusText: isMultiplierActive ? `Active (${formatTimeLeft(tapMultiplierEndTime)})` : 'Available',
       buttonText: isMultiplierActive ? 'Working...' : 'Watch Ad',
-      disabled: isMultiplierActive || isWatchingAd,
+      disabled: isMultiplierActive || isWatchingAd || !canWatchAd,
       instantReward: '+1000 Coins',
       bonusReward: 'x4 Taps for 5 minutes',
       rewardIcon: <Zap size={12} className="text-orange-400" />
@@ -80,7 +95,7 @@ export function BoostsScreen() {
       isActive: false,
       statusText: isEnergyFull ? 'Energy Full' : 'Available',
       buttonText: 'Watch Ad',
-      disabled: isEnergyFull || isWatchingAd,
+      disabled: isEnergyFull || isWatchingAd || !canWatchAd,
       instantReward: '+1000 Coins',
       bonusReward: 'Full Energy Instantly',
       rewardIcon: <BatteryCharging size={12} className="text-green-400" />
@@ -95,9 +110,9 @@ export function BoostsScreen() {
       borderColor: 'border-blue-500/30',
       action: watchAdForBot,
       isActive: isBotActive,
-      statusText: isBotActive ? `Active (${formatHoursLeft(autoBotActiveUntil)})` : `${adsWatchedToday}/3 Daily Ads`,
+      statusText: isBotActive ? `Active (${formatHoursLeft(autoBotActiveUntil)})` : `${adsWatchedToday}/30 Daily`,
       buttonText: isBotActive ? 'Working...' : 'Watch Ad',
-      disabled: isBotActive || isWatchingAd,
+      disabled: isBotActive || isWatchingAd || !canWatchAd,
       instantReward: '+1000 Coins',
       bonusReward: 'Auto Bot for 6 Hours',
       rewardIcon: <Bot size={12} className="text-blue-400" />
@@ -111,6 +126,45 @@ export function BoostsScreen() {
         <p className="text-zinc-400 text-sm">Watch short ads and get instant rewards and powerful features!</p>
       </div>
 
+      {adProtection && (
+        <div className="mb-6 bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-4">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-sm text-zinc-400">Daily Ads</span>
+            <span className="text-sm font-bold text-white">{30 - (adProtection.remainingToday || 0)} / 30</span>
+          </div>
+          <div className="w-full bg-white/10 rounded-full h-2 mb-3">
+            <div 
+              className="bg-gradient-to-r from-blue-500 to-cyan-500 h-2 rounded-full transition-all"
+              style={{ width: `${((30 - (adProtection.remainingToday || 0)) / 30) * 100}%` }}
+            />
+          </div>
+          
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-zinc-500">
+              This Hour: {5 - (adProtection.remainingThisHour || 0)} / 5
+            </span>
+            {nextAdWaitSeconds > 0 && (
+              <span className="text-orange-400 flex items-center gap-1">
+                <Clock size={12} />
+                Wait {formatWaitTime(nextAdWaitSeconds)}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {!canWatchAd && nextAdWaitSeconds > 0 && (
+        <div className="mb-6 bg-orange-500/10 border border-orange-500/30 rounded-2xl p-4 flex items-center gap-3">
+          <AlertTriangle size={24} className="text-orange-400 shrink-0" />
+          <div>
+            <p className="text-sm font-semibold text-orange-300">Cooldown Active</p>
+            <p className="text-xs text-orange-400/70">
+              Please wait {formatWaitTime(nextAdWaitSeconds)} between ads to protect the system
+            </p>
+          </div>
+        </div>
+      )}
+
       <div className="space-y-5">
         {boosts.map((boost) => {
           const isLoading = loadingBoostId === boost.id;
@@ -119,7 +173,7 @@ export function BoostsScreen() {
           return (
             <div 
               key={boost.id}
-              className={`bg-white/5 backdrop-blur-xl border ${boost.borderColor} rounded-3xl p-5 flex flex-col gap-4 relative overflow-hidden shadow-lg transition-all duration-300 ${isDisabled ? 'opacity-90' : 'hover:bg-white/[0.07]'}`}
+              className={`bg-white/5 backdrop-blur-xl border ${boost.borderColor} rounded-3xl p-5 flex flex-col gap-4 relative overflow-hidden shadow-lg transition-all duration-300 ${isDisabled ? 'opacity-60' : 'hover:bg-white/[0.07]'}`}
             >
               <div className={`absolute -top-10 -right-10 w-40 h-40 bg-gradient-to-br ${boost.color} blur-3xl opacity-40 pointer-events-none`} />
               
@@ -141,9 +195,7 @@ export function BoostsScreen() {
                     {boost.subDescription}
                   </p>
                   
-                  {/* Rewards Display */}
                   <div className="mt-4 space-y-2">
-                    {/* Instant Reward */}
                     <div className="flex items-center gap-2 bg-yellow-500/10 border border-yellow-500/20 px-3 py-2 rounded-lg">
                       <Coins size={14} className="text-yellow-400" />
                       <div className="flex flex-col">
@@ -152,7 +204,6 @@ export function BoostsScreen() {
                       </div>
                     </div>
                     
-                    {/* Bonus Reward */}
                     <div className="flex items-center gap-2 bg-white/5 border border-white/10 px-3 py-2 rounded-lg">
                       {boost.rewardIcon}
                       <div className="flex flex-col">
