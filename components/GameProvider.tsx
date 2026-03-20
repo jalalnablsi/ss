@@ -442,6 +442,7 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
       const now = Date.now();
       const newEndTime = now + 5 * 60 * 1000;
       
+      // Update local state first for immediate feedback
       setState(prev => ({
         ...prev,
         tapMultiplier: 4,
@@ -451,8 +452,8 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
         lastUpdateTime: now
       }));
       
+      // Sync with server - this will record the ad watch
       await syncWithServer('multiplier');
-      await checkAdEligibility();
     }
   };
 
@@ -467,15 +468,17 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
     
     const success = await showAd('Full Energy Refill', 'Watch ad to restore full energy instantly + 1000 instant coins!');
     if (success) {
+      const now = Date.now();
+      
       setState(prev => ({
         ...prev,
         energy: prev.maxEnergy,
         coins: prev.coins + 1000,
         challengeCoins: prev.challengeCoins + 1000,
-        lastUpdateTime: Date.now()
+        lastUpdateTime: now
       }));
+      
       await syncWithServer('energy');
-      await checkAdEligibility();
     }
   };
 
@@ -489,15 +492,17 @@ export const GameProvider = ({ children }: { children: React.ReactNode }) => {
     const success = await showAd('Auto-Tap Bot', 'Watch ad to activate auto-tap bot for 6 hours + 1000 instant coins!');
     if (success) {
       const now = Date.now();
+      const newEndTime = Math.max(now, state.autoBotActiveUntil) + 6 * 60 * 60 * 1000;
+      
       setState(prev => ({
         ...prev,
-        autoBotActiveUntil: now + 6 * 60 * 60 * 1000,
+        autoBotActiveUntil: newEndTime,
         coins: prev.coins + 1000,
         challengeCoins: prev.challengeCoins + 1000,
         lastUpdateTime: now
       }));
+      
       await syncWithServer('bot');
-      await checkAdEligibility();
     }
   };
 
