@@ -1,5 +1,5 @@
 // lib/adProtection.ts
-// نظام حماية متدرج للإعلانات - يمنع السكام ويحمي من حظر شركة الإعلانات
+// Advanced Ad Protection System - Progressive Cooldown & Anti-Fraud
 
 import { queryD1, executeD1 } from './db';
 
@@ -32,7 +32,7 @@ export interface AdProtectionResult {
 export const DEFAULT_PROTECTION_CONFIG: AdProtectionConfig = {
   maxAdsPerDay: 30,
   maxAdsPerHour: 5,
-  cooldownTiers: [30, 60, 300, 600, 900],
+  cooldownTiers: [30, 60, 300, 600, 900], // 30s, 1m, 5m, 10m, 15m
   maxQuickRewards: 3,
 };
 
@@ -44,9 +44,10 @@ export async function checkAdEligibility(
   const todayStr = new Date(now).toISOString().split('T')[0];
   const currentHour = new Date(now).getHours();
 
+  // Get today's ad watch logs
   const todayLogs = await queryD1<AdWatchRecord>(
     `SELECT * FROM ad_watch_logs 
-     WHERE telegram_id = ? AND date_str = ? 
+     WHERE telegram_id = ? AND date_str = ? AND ad_type != 'VIOLATION'
      ORDER BY watched_at DESC`,
     [telegramId, todayStr]
   );
@@ -54,6 +55,7 @@ export async function checkAdEligibility(
   const adsToday = todayLogs.length;
   const adsThisHour = todayLogs.filter(log => log.hour_bucket === currentHour).length;
 
+  // Check daily limit (30 ads)
   if (adsToday >= config.maxAdsPerDay) {
     return {
       allowed: false,
@@ -65,6 +67,7 @@ export async function checkAdEligibility(
     };
   }
 
+  // Check hourly limit (5 ads)
   if (adsThisHour >= config.maxAdsPerHour) {
     const nextHour = new Date(now);
     nextHour.setHours(currentHour + 1, 0, 0, 0);
@@ -80,33 +83,38 @@ export async function checkAdEligibility(
     };
   }
 
+  // Calculate progressive cooldown
   let waitSeconds = 0;
   let currentTier = 0;
 
   if (todayLogs.length > 0) {
     const lastAd = todayLogs[0];
     const timeSinceLastAd = now - lastAd.watched_at;
+
+    // Count ads in last hour for tier determination
     const recentAds = todayLogs.filter(log => 
       log.watched_at > now - (60 * 60 * 1000)
     ).length;
 
+    // Determine cooldown tier based on recent activity
     if (recentAds === 0) {
       currentTier = 0;
-      waitSeconds = config.cooldownTiers[0];
+      waitSeconds = config.cooldownTiers[0]; // 30 seconds
     } else if (recentAds === 1) {
       currentTier = 1;
-      waitSeconds = config.cooldownTiers[1];
+      waitSeconds = config.cooldownTiers[1]; // 1 minute
     } else if (recentAds === 2) {
       currentTier = 2;
-      waitSeconds = config.cooldownTiers[2];
+      waitSeconds = config.cooldownTiers[2]; // 5 minutes
     } else if (recentAds === 3) {
       currentTier = 3;
-      waitSeconds = config.cooldownTiers[3];
+      waitSeconds = config.cooldownTiers[3]; // 10 minutes
     } else {
       currentTier = 4;
-      waitSeconds = config.cooldownTiers[4];
+      waitSeconds = config.cooldownTiers[4]; // 15 minutes
     }
 
+    // Check if enough time has passed
     if (timeSinceLastAd < waitSeconds * 1000) {
       const remainingWait = Math.ceil((waitSeconds * 1000 - timeSinceLastAd) / 1000);
 
@@ -122,6 +130,7 @@ export async function checkAdEligibility(
     }
   }
 
+  // Allow ad - subtract 1 for the current ad being watched
   return {
     allowed: true,
     remainingToday: config.maxAdsPerDay - adsToday - 1,
@@ -133,7 +142,7 @@ export async function checkAdEligibility(
 
 export async function logAdWatch(
   telegramId: string,
-  adType: 'multiplier' | 'energy' | 'bot',
+  adType: 'multiplier' | 'energy' | 'bot' | 'VIOLATION',
   rewardGiven: number = 1000,
   ipAddress?: string,
   userAgent?: string
@@ -150,6 +159,7 @@ export async function logAdWatch(
     [id, telegramId, adType, now, currentHour, todayStr, rewardGiven, ipAddress || null, userAgent || null]
   );
 
+  // Update user counters (for backward compatibility)
   await executeD1(
     `UPDATE users SET 
       ads_watched_today = ads_watched_today + 1,
@@ -166,7 +176,7 @@ export async function getUserAdStats(telegramId: string) {
 
   const todayLogs = await queryD1<AdWatchRecord>(
     `SELECT * FROM ad_watch_logs 
-     WHERE telegram_id = ? AND date_str = ? 
+     WHERE telegram_id = ? AND date_str = ? AND ad_type != 'VIOLATION'
      ORDER BY watched_at DESC`,
     [telegramId, todayStr]
   );
@@ -174,6 +184,7 @@ export async function getUserAdStats(telegramId: string) {
   const lastAd = todayLogs[0] || null;
   const adsThisHour = todayLogs.filter(log => log.hour_bucket === currentHour).length;
 
+  // Calculate time until next ad
   let nextAdInSeconds = 0;
   if (lastAd) {
     const config = DEFAULT_PROTECTION_CONFIG;
@@ -210,27 +221,63 @@ export async function detectSuspiciousActivity(telegramId: string): Promise<{
 
   const recentLogs = await queryD1<AdWatchRecord>(
     `SELECT * FROM ad_watch_logs 
-     WHERE telegram_id = ? AND watched_at > ? 
+     WHERE telegram_id = ? AND watched_at > ? AND ad_type != 'VIOLATION'
      ORDER BY watched_at DESC`,
     [telegramId, fiveMinutesAgo]
   );
 
+  // More than 5 ads in 5 minutes = suspicious
   if (recentLogs.length > 5) {
     return {
       isSuspicious: true,
-      reason: 'RAPID_AD_WATCHING: ' + recentLogs.length + ' ads in 5 minutes',
+      reason: `RAPID_AD_WATCHING: ${recentLogs.length} ads in 5 minutes`,
     };
   }
 
+  // Check for impossible timing (less than 15 seconds between ads)
   for (let i = 0; i < recentLogs.length - 1; i++) {
     const diff = recentLogs[i].watched_at - recentLogs[i + 1].watched_at;
-    if (diff < 10000) {
+    if (diff < 15000) { // Less than 15 seconds
       return {
         isSuspicious: true,
-        reason: 'IMPOSSIBLE_AD_SPEED: ' + (diff / 1000) + ' seconds between ads',
+        reason: `IMPOSSIBLE_AD_SPEED: ${(diff / 1000).toFixed(3)} seconds between ads`,
       };
     }
   }
 
   return { isSuspicious: false };
+}
+
+export async function recordViolation(
+  telegramId: string,
+  violationType: string
+): Promise<{ isBanned: boolean; banUntil?: number }> {
+  const now = Date.now();
+  const todayStr = new Date(now).toISOString().split('T')[0];
+  
+  // Log as violation (no reward)
+  await logAdWatch(
+    telegramId,
+    'VIOLATION',
+    0,
+    undefined,
+    violationType
+  );
+  
+  // Count violations today
+  const violations = await queryD1(
+    `SELECT COUNT(*) as count FROM ad_watch_logs 
+     WHERE telegram_id = ? AND date_str = ? AND ad_type = 'VIOLATION'`,
+    [telegramId, todayStr]
+  );
+  
+  const violationCount = violations[0]?.count || 0;
+  
+  // Ban after 3 violations (24 hours)
+  if (violationCount >= 3) {
+    const banUntil = now + (24 * 60 * 60 * 1000);
+    return { isBanned: true, banUntil };
+  }
+  
+  return { isBanned: false };
 }
