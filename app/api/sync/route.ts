@@ -88,7 +88,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'User not found.', code: 'USER_NOT_FOUND' }, { status: 404 });
     }
 
-    // ✅ التحقق من النشاط المشبوه
+    // Check for suspicious activity
     const suspiciousCheck = await detectSuspiciousActivity(telegramId);
     if (suspiciousCheck.isSuspicious) {
       console.warn(`[${requestId}] Suspicious activity detected for ${telegramId}: ${suspiciousCheck.reason}`);
@@ -115,7 +115,9 @@ export async function POST(req: Request) {
 
     let lastAdDateStr = '';
     if (newLastAdWatchDate) {
-      lastAdDateStr = newLastAdWatchDate.includes('T') ? newLastAdWatchDate.split('T')[0] : new Date(parseInt(newLastAdWatchDate)).toISOString().split('T')[0];
+      lastAdDateStr = newLastAdWatchDate.includes('T') 
+        ? newLastAdWatchDate.split('T')[0] 
+        : new Date(parseInt(newLastAdWatchDate)).toISOString().split('T')[0];
     }
     
     if (lastAdDateStr !== todayStr) {
@@ -126,7 +128,7 @@ export async function POST(req: Request) {
     let adProtectionResult = null;
 
     if (adWatchedType) {
-      // ✅ التحقق من صلاحية مشاهدة الإعلان
+      // Check ad eligibility
       adProtectionResult = await checkAdEligibility(telegramId);
       
       if (!adProtectionResult.allowed) {
@@ -142,7 +144,7 @@ export async function POST(req: Request) {
         }, { status: 429 });
       }
 
-      // ✅ تسجيل مشاهدة الإعلان في قاعدة البيانات
+      // Log ad watch
       await logAdWatch(
         telegramId, 
         adWatchedType, 
@@ -194,6 +196,7 @@ export async function POST(req: Request) {
       }
     }
 
+    // Handle referrals
     if (newTotalTaps >= 500 && user.total_taps < 500 && user.referred_by) {
       try {
         const referrers = await queryD1('SELECT coins, challenge_coins, referrals_activated FROM users WHERE telegram_id = ?', [user.referred_by]);
@@ -217,6 +220,7 @@ export async function POST(req: Request) {
       }
     }
 
+    // Update database
     await executeD1(`
       UPDATE users SET 
         coins = ?, 
@@ -246,6 +250,11 @@ export async function POST(req: Request) {
       telegramId
     ]);
 
+    // ✅ Get updated ad protection status after recording the ad
+    const updatedAdProtection = adWatchedType 
+      ? await checkAdEligibility(telegramId)
+      : adProtectionResult;
+
     return NextResponse.json({ 
       success: true, 
       user: {
@@ -270,7 +279,14 @@ export async function POST(req: Request) {
         energyRecovered: currentEnergy - user.energy,
         processedTaps: processedTapsCount,
         adRewardApplied,
-        adProtection: adProtectionResult
+        // ✅ Return updated ad protection status
+        adProtection: updatedAdProtection ? {
+          remainingToday: updatedAdProtection.remainingToday,
+          remainingThisHour: updatedAdProtection.remainingThisHour,
+          nextAdInSeconds: updatedAdProtection.waitSeconds,
+          isAllowed: updatedAdProtection.allowed,
+          waitSeconds: updatedAdProtection.waitSeconds
+        } : null
       }
     });
 
